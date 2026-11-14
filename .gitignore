@@ -31,3 +31,5 @@ Desktop.ini
 .vscode/*
 !.vscode/extensions.json
 .idea/
+# Generated Linux binary (built by MagNum/scripts/build-fs.js)
+MagNum/src-tauri/resources/backend/magnum-fs

@@ -32,4 +32,5 @@ execSync(`cargo build --release --manifest-path "${manifest}"`, { stdio: 'inheri
 
 fs.mkdirSync(path.dirname(dst), { recursive: true });
 fs.copyFileSync(src, dst);
+if (process.platform !== 'win32') fs.chmodSync(dst, 0o755);
 console.log(`[magnum-fs] installed -> ${dst} (${(fs.statSync(dst).size / 1024).toFixed(0)} KB)`);

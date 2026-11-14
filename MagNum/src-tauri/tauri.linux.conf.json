@@ -1,0 +1,13 @@
+{
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "appimage"],
+    "resources": {
+      "resources/backend": null,
+      "resources/backend/*.js": "backend/",
+      "resources/backend/package*.json": "backend/",
+      "resources/backend/magnum-fs": "backend/",
+      "resources/backend/node_modules": "backend/node_modules"
+    }
+  }
+}

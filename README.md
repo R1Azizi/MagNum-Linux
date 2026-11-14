@@ -11,7 +11,7 @@
     <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-2021-DEA584?logo=rust&logoColor=black" alt="Rust"></a>
     <a href="https://react.dev/"><img src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black" alt="React"></a>
     <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white" alt="TypeScript"></a>
-    <a href="#"><img src="https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white" alt="Platform: Windows"></a>
+    <a href="#"><img src="https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-0078D6" alt="Platform: Windows | Linux"></a>
   </p>
 
   <p>
@@ -30,7 +30,7 @@
   <br />
 
   <img src="docs/screenshots/preview-2.png" alt="MagNum Terminal and Diff Inspector" width="100%" style="border-radius: 8px;" />
-  <p><em>Interactive PowerShell Terminal & Visual Hunk Diff Inspector</em></p>
+  <p><em>Interactive Terminal (PowerShell on Windows, bash on Linux) & Visual Hunk Diff Inspector</em></p>
 </div>
 
 ---
@@ -42,14 +42,14 @@
 - **Built-in Engineering Skills:** Instant workflow specialization with dedicated skills including `/plan`, `/debug`, `/multitask`, and `/ask`.
 - **Advanced Workspace Inspector:**
   - **Changes Tab:** Visual unified diff viewer with hunk folding, line-by-line inspection, and atomic single-click file revert.
-  - **Live Terminal:** Real-time integrated PowerShell with inline prompt tracking, shell restarts, and Ctrl+C interrupt support.
+  - **Live Terminal:** Real-time integrated shell (PowerShell on Windows, bash on Linux) with inline prompt tracking, shell restarts, and Ctrl+C interrupt support.
   - **Native In-App Webview:** Embedded Chromium browser with live text-reading and search grounding via dynamic CDP bridging.
   - **File Explorer:** Workspace tree viewer with Monaco Editor syntax highlighting.
 - **Safety & Human-in-the-Loop:** Toggleable approval gates for patch application and shell command execution.
 - **Local-First & Privacy-Centered:**
   - All chats and diffs persist in local **SQLite** (`magnum.db` with WAL mode).
   - Inter-process communication uses a cryptographically generated 64-character token via authenticated local WebSockets (`localhost:5454`).
-  - Browser sessions and login cookies stay strictly on your local disk (`AppData/Local/MagNum`).
+  - Browser sessions and login cookies stay strictly on your local disk (the per-user app data directory, e.g. `AppData/Local/MagNum` on Windows or `~/.local/share/com.green.magnum` on Linux).
 - **Tailored Interface & Localization:** Modern dark and light workspaces, F11 fullscreen workflow, and native English and Persian (RTL) localization.
 
 ---
@@ -108,8 +108,8 @@ MagNum uses a 3-tier hybrid architecture combining native performance, OS integr
 
 - **Node.js:** v20.x or v22.x+ (Recommended: Node 22+ with native `node:sqlite`).
 - **Rust & Cargo:** Stable toolchain (`rustup default stable`).
-- **C++ Build Tools:** Visual Studio C++ Build Tools installed on Windows.
-- **Google Chrome** or **Microsoft Edge** installed.
+- **C++ Build Tools (Windows):** Visual Studio C++ Build Tools. On Linux see [Linux](#linux) below.
+- **Google Chrome**, **Microsoft Edge** or **Chromium** installed.
 
 ### 1. Clone & Install Dependencies
 
@@ -143,6 +143,28 @@ Run the main application with live hot-reloading:
 cd MagNum
 npm run tauri dev
 ```
+
+### Linux
+
+Install system packages (Debian/Ubuntu names):
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+```
+
+Install Rust via [rustup](https://rustup.rs), Node.js 20 or 22+ (`node` must be on your `PATH`), and Chrome, Edge or Chromium (auto-detected). Then:
+
+```bash
+cd MagNum
+npm install
+cd src-tauri/resources/backend
+npm install
+npx playwright install chromium   # only needed if no system Chrome/Chromium is installed
+cd ../../..
+npm run tauri dev
+```
+
+`npm run tauri build` uses `src-tauri/tauri.linux.conf.json` to produce `.deb` and `.AppImage` bundles, without the Windows-only `node.exe` / `magnum-fs.exe`. The `magnum-fs` helper is compiled by `scripts/build-fs.js` and is git-ignored. The Windows installer (`installer/`, `build-setup.js`) does not apply to Linux. The integrated terminal uses `bash`. App data lives in the directory derived from the identifier `com.green.magnum` (`~/.local/share/com.green.magnum`).
 
 ---
 
