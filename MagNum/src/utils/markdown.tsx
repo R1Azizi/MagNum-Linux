@@ -2,6 +2,23 @@ import React from 'react';
 import { AgentIcon, EMOJI_TO_ICON, AgentIconKind } from './agentIcons';
 
 const CARET_SENTINEL = '\uE000';
+
+// Strong RTL letters (Arabic/Persian/Hebrew blocks, presentation forms) vs Latin letters.
+const RTL_LETTER_RE = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/g;
+const LTR_LETTER_RE = /[A-Za-z\u00C0-\u024F]/g;
+
+// Picks the base direction of a block by its dominant script rather than its first
+// character: a Persian sentence that opens with a brand name stays RTL, and an English line
+// such as "Tauri v2 + Vite." stays LTR with its trailing period on the correct side.
+// Returns undefined when the text has no letters.
+export function textDir(text: string): 'rtl' | 'ltr' | undefined {
+  const plain = text.replace(/`[^`]*`/g, ' ');
+  const rtl = (plain.match(RTL_LETTER_RE) || []).length;
+  const ltr = (plain.match(LTR_LETTER_RE) || []).length;
+  if (rtl === 0 && ltr === 0) return undefined;
+  return rtl >= ltr ? 'rtl' : 'ltr';
+}
+
 export function formatInline(text: string): React.ReactNode {
   if (!text) return null;
   const tokens = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\uE000)/g);
@@ -17,7 +34,9 @@ export function formatInline(text: string): React.ReactNode {
             borderRadius: '4px',
             fontSize: '12px',
             color: 'var(--code-text)',
-            fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)'
+            fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)',
+            direction: 'ltr',
+            unicodeBidi: 'isolate'
           }}
         >
           {token.slice(1, -1)}
@@ -25,7 +44,7 @@ export function formatInline(text: string): React.ReactNode {
       );
     }
     if (token.startsWith('**') && token.endsWith('**')) {
-      return <strong key={i} style={{ color: 'var(--text-main)', fontWeight: 700 }}>{token.slice(2, -2)}</strong>;
+      return <strong key={i} style={{ color: 'var(--text-main)', fontWeight: 700, unicodeBidi: 'isolate' }}>{token.slice(2, -2)}</strong>;
     }
     const parts = token.split(/(📖||🔎||✅||💻||🎉|⚠️||⏳|📤|✔|✘)/g);
     if (parts.length === 1) return token;
@@ -50,7 +69,7 @@ function renderMarkdownTable(tableLines: string[], key: number | string) {
   const dataRows = cleanRows.slice(2);
 
   return (
-    <div key={key} style={{ margin: '14px 0', overflowX: 'auto' }}>
+    <div key={key} dir={textDir(tableLines.join(' '))} style={{ margin: '14px 0', overflowX: 'auto' }}>
       <table style={{
         width: '100%',
         borderCollapse: 'collapse',
@@ -88,9 +107,23 @@ function renderMarkdownTable(tableLines: string[], key: number | string) {
 export function MarkdownRenderer({ content }: { content: string }) {
   if (!content) return null;
   const parts = content.split(/(```[\s\S]*?```)/g);
+  const rootDir = textDir(content);
+  const isRtl = rootDir === 'rtl';
 
   return (
-    <div dir="auto" style={{ lineHeight: '1.75', fontSize: '13px', color: 'var(--text-main)' }}>
+    <div
+      dir={rootDir ?? 'auto'}
+      style={{
+        // Persian needs more leading and a face with proper Persian metrics.
+        lineHeight: isRtl ? '1.95' : '1.75',
+        fontSize: '13px',
+        color: 'var(--text-main)',
+        fontFamily: isRtl ? "'Vazirmatn', 'Plus Jakarta Sans', sans-serif" : undefined,
+        textAlign: 'start',
+        overflowWrap: 'anywhere',
+        wordBreak: 'break-word',
+      }}
+    >
       {parts.map((part, idx) => {
         if (part.startsWith('```') && part.endsWith('```')) {
            const lines = part.slice(3, -3).trim().split('\n');
@@ -140,23 +173,26 @@ export function MarkdownRenderer({ content }: { content: string }) {
               {lines.map((line, lIdx) => {
                 const trimmed = line.trim();
                 if (trimmed.startsWith('### ')) {
-                  return <h4 key={lIdx} style={{ fontSize: '14px', fontWeight: 700, margin: '14px 0 6px', color: 'var(--text-main)' }}>{formatInline(trimmed.slice(4))}</h4>;
+                  return <h4 key={lIdx} dir={textDir(trimmed)} style={{ fontSize: '14px', fontWeight: 700, margin: '14px 0 6px', color: 'var(--text-main)' }}>{formatInline(trimmed.slice(4))}</h4>;
                 }
                 if (trimmed.startsWith('## ')) {
-                  return <h3 key={lIdx} style={{ fontSize: '15px', fontWeight: 700, margin: '16px 0 8px', color: 'var(--text-main)' }}>{formatInline(trimmed.slice(3))}</h3>;
+                  return <h3 key={lIdx} dir={textDir(trimmed)} style={{ fontSize: '15px', fontWeight: 700, margin: '16px 0 8px', color: 'var(--text-main)' }}>{formatInline(trimmed.slice(3))}</h3>;
                 }
                 if (trimmed.startsWith('# ')) {
-                  return <h2 key={lIdx} style={{ fontSize: '17px', fontWeight: 800, margin: '18px 0 8px', color: 'var(--text-main)' }}>{formatInline(trimmed.slice(2))}</h2>;
+                  return <h2 key={lIdx} dir={textDir(trimmed)} style={{ fontSize: '17px', fontWeight: 800, margin: '18px 0 8px', color: 'var(--text-main)' }}>{formatInline(trimmed.slice(2))}</h2>;
                 }
                 if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+                  const itemText = trimmed.slice(2);
+                  const itemDir = textDir(itemText);
+                  // Bullet sits on the start side of its own item, so it follows the item's direction.
                   return (
-                    <div key={lIdx} style={{ display: 'flex', gap: '8px', margin: '4px 0', alignItems: 'flex-start' }}>
-                      <span style={{ color: 'var(--accent-green)', lineHeight: '1.75' }}>•</span>
-                      <span style={{ flex: 1 }}>{formatInline(trimmed.slice(2))}</span>
+                    <div key={lIdx} dir={itemDir} style={{ display: 'flex', gap: '8px', margin: '4px 0', alignItems: 'flex-start' }}>
+                      <span aria-hidden="true" style={{ color: 'var(--accent-green)', lineHeight: 'inherit', flex: 'none' }}>•</span>
+                      <span style={{ flex: 1, minWidth: 0 }}>{formatInline(itemText)}</span>
                     </div>
                   );
                 }
-                return <div key={lIdx}>{formatInline(line)}</div>;
+                return <div key={lIdx} dir={textDir(line)}>{formatInline(line)}</div>;
               })}
             </div>
           );
