@@ -1,16 +1,20 @@
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command};
 use std::sync::Mutex;
 
 use tauri::Manager;
 
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub struct AppState {
     pub server: Mutex<Option<Child>>,
+    #[cfg(windows)]
     pub job: Mutex<usize>,
 }
 
+#[cfg(windows)]
 #[repr(C)]
 struct JobObjectBasicLimitInformation {
     per_process_user_time_limit: i64,
@@ -24,6 +28,7 @@ struct JobObjectBasicLimitInformation {
     scheduling_class: u32,
 }
 
+#[cfg(windows)]
 #[repr(C)]
 struct IoCounters {
     read_operation_count: u64,
@@ -34,6 +39,7 @@ struct IoCounters {
     other_transfer_count: u64,
 }
 
+#[cfg(windows)]
 #[repr(C)]
 struct JobObjectExtendedLimitInformation {
     basic: JobObjectBasicLimitInformation,
@@ -44,6 +50,7 @@ struct JobObjectExtendedLimitInformation {
     peak_job_memory_used: usize,
 }
 
+#[cfg(windows)]
 unsafe extern "system" {
     fn CreateJobObjectW(sa: *mut std::ffi::c_void, name: *const u16) -> *mut std::ffi::c_void;
     fn SetInformationJobObject(
@@ -57,8 +64,11 @@ unsafe extern "system" {
     fn CloseHandle(h: *mut std::ffi::c_void) -> i32;
 }
 
+#[cfg(windows)]
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
+#[cfg(windows)]
 const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
+#[cfg(windows)]
 const PROCESS_ALL_ACCESS: u32 = 0x001F0FFF;
 
 #[tauri::command]
@@ -164,6 +174,49 @@ fn get_backend_port(app_handle: tauri::AppHandle) -> Result<u16, String> {
         .and_then(|p| p.parse::<u16>().map_err(|e| e.to_string()))
 }
 
+/// Resolve the node binary on non-Windows: MAGNUM_NODE, bundled `backend/node`, then PATH.
+#[cfg(not(windows))]
+fn resolve_node(backend_dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    if let Ok(p) = std::env::var("MAGNUM_NODE") {
+        if !p.is_empty() {
+            let p = std::path::PathBuf::from(p);
+            return if p.is_file() {
+                Ok(p)
+            } else {
+                Err(format!("MAGNUM_NODE points to a missing file: {}", p.display()))
+            };
+        }
+    }
+    let bundled = backend_dir.join("node");
+    if bundled.is_file() {
+        return Ok(bundled);
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let cand = dir.join("node");
+            if cand.is_file() {
+                return Ok(cand);
+            }
+        }
+    }
+    Err("Node.js not found: install node, put it on PATH, or set MAGNUM_NODE".into())
+}
+
+/// SIGTERM the backend's process group, reap the leader, then SIGKILL any survivors.
+#[cfg(unix)]
+fn kill_process_group(child: &mut Child) {
+    let pgid = -(child.id() as libc::pid_t);
+    unsafe { libc::kill(pgid, libc::SIGTERM) };
+    for _ in 0..10 {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    unsafe { libc::kill(pgid, libc::SIGKILL) };
+    let _ = child.wait();
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -179,6 +232,7 @@ pub fn run() {
  .plugin(tauri_plugin_process::init())
         .manage(AppState {
             server: Mutex::new(None),
+            #[cfg(windows)]
             job: Mutex::new(0),
         })
         .setup(|app| {
@@ -188,8 +242,9 @@ pub fn run() {
             let data_dir = app.path().app_data_dir().expect("app data dir");
             std::fs::create_dir_all(&data_dir).expect("create data dir");
 
-            
+            #[cfg(windows)]
             let job_handle = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
+            #[cfg(windows)]
             if !job_handle.is_null() {
                 let mut info: JobObjectExtendedLimitInformation = unsafe { std::mem::zeroed() };
                 info.basic.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -203,22 +258,36 @@ pub fn run() {
                 }
             }
             let state = app.state::<AppState>();
-            *state.job.lock().unwrap() = job_handle as usize;
+            #[cfg(windows)]
+            {
+                *state.job.lock().unwrap() = job_handle as usize;
+            }
 
+            #[cfg(windows)]
             let node_exe = backend_dir.join("node.exe");
+            #[cfg(not(windows))]
+            let node_exe = resolve_node(&backend_dir)?;
             let cdp_port = std::env::var("MAGNUM_CDP_PORT").unwrap_or_else(|_| "9222".into());
             let backend_port = std::env::var("MAGNUM_BACKEND_PORT").unwrap_or_else(|_| "5454".into());
-            let child = Command::new(&node_exe)
-                .arg("server.js")
+            let mut cmd = Command::new(&node_exe);
+            cmd.arg("server.js")
                 .current_dir(&backend_dir)
                 .env("MAGNUM_DATA_DIR", &data_dir)
                 .env("MAGNUM_CDP_PORT", &cdp_port)
-                .env("MAGNUM_BACKEND_PORT", &backend_port)
-                .creation_flags(CREATE_NO_WINDOW)
+                .env("MAGNUM_BACKEND_PORT", &backend_port);
+            #[cfg(windows)]
+            cmd.creation_flags(CREATE_NO_WINDOW);
+            // Own process group so the whole backend tree can be signalled on exit.
+            #[cfg(unix)]
+            std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+            #[cfg(windows)]
+            let child = cmd.spawn().expect("failed to spawn node server");
+            #[cfg(not(windows))]
+            let child = cmd
                 .spawn()
-                .expect("failed to spawn node server");
+                .map_err(|e| format!("failed to spawn node server ({}): {}", node_exe.display(), e))?;
 
-            
+            #[cfg(windows)]
             if !job_handle.is_null() {
                 let pid = child.id();
                 let proc_handle = unsafe { OpenProcess(PROCESS_ALL_ACCESS, 0, pid) };
@@ -234,6 +303,7 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Destroyed = event {
                 let state = window.state::<AppState>();
+                #[cfg(windows)]
                 let pid = {
                     let mut guard = state.server.lock().unwrap();
                     if let Some(child) = guard.as_mut() {
@@ -244,11 +314,16 @@ pub fn run() {
                         None
                     }
                 };
+                #[cfg(windows)]
                 if let Some(p) = pid {
                     let _ = std::process::Command::new("taskkill")
                         .args(["/PID", &p.to_string(), "/T", "/F"])
                         .creation_flags(CREATE_NO_WINDOW)
                         .spawn();
+                }
+                #[cfg(unix)]
+                if let Some(child) = state.server.lock().unwrap().as_mut() {
+                    kill_process_group(child);
                 }
             }
         })
