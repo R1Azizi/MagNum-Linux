@@ -41,13 +41,36 @@ const BROWSER_CANDIDATES = [
   },
 ];
 
-function resolveChannel() {
+if (process.platform === 'linux') {
+  BROWSER_CANDIDATES.push(
+    {
+      channel: 'chrome',
+      paths: ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/opt/google/chrome/chrome'],
+    },
+    {
+      channel: 'msedge',
+      paths: ['/usr/bin/microsoft-edge', '/usr/bin/microsoft-edge-stable', '/opt/microsoft/msedge/msedge'],
+    },
+    {
+      // Chromium has no Playwright channel; it must be launched by executablePath.
+      channel: null,
+      paths: ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/snap/bin/chromium'],
+    },
+  );
+}
+
+function resolveBrowser() {
   const forced = process.env.BROWSER_CHANNEL;
-  if (forced) return forced === 'chromium' ? null : forced;
+  if (forced) return { channel: forced === 'chromium' ? null : forced, executablePath: null };
   for (const candidate of BROWSER_CANDIDATES) {
-    if (candidate.paths.some((p) => p && fs.existsSync(p))) return candidate.channel;
+    const found = candidate.paths.find((p) => p && fs.existsSync(p));
+    if (found) return { channel: candidate.channel, executablePath: candidate.channel ? null : found };
   }
-  return null;
+  return { channel: null, executablePath: null };
+}
+
+function resolveChannel() {
+  return resolveBrowser().channel;
 }
 
 function installStealth(config) {
@@ -205,20 +228,34 @@ function sanitizeRestoredSession(userDataDir) {
 
 async function launchStealthContext(userDataDir, options = {}) {
   sanitizeRestoredSession(userDataDir);
-  const channel = options.channel !== undefined ? options.channel : resolveChannel();
+  const resolved = resolveBrowser();
+  const channel = options.channel !== undefined ? options.channel : resolved.channel;
+  const executablePath = options.channel !== undefined ? null : resolved.executablePath;
   const locale = options.locale || process.env.STEALTH_LOCALE || 'en-US';
   const headless = false; 
 
-  const context = await chromium.launchPersistentContext(userDataDir, {
-    headless,
-    channel: channel || undefined,
-    viewport: options.viewport || null,
-    locale,
-    acceptDownloads: true,
-    chromiumSandbox: true,
-    args: STEALTH_ARGS,
-    ignoreDefaultArgs: IGNORED_DEFAULT_ARGS,
-  });
+  let context;
+  try {
+    context = await chromium.launchPersistentContext(userDataDir, {
+      headless,
+      channel: channel || undefined,
+      executablePath: executablePath || undefined,
+      viewport: options.viewport || null,
+      locale,
+      acceptDownloads: true,
+      // Opt-in only (e.g. containers / restricted user namespaces on Linux).
+      chromiumSandbox: process.env.MAGNUM_NO_SANDBOX !== '1',
+      args: STEALTH_ARGS,
+      ignoreDefaultArgs: IGNORED_DEFAULT_ARGS,
+    });
+  } catch (err) {
+    if (!channel && !executablePath && /Executable doesn't exist|playwright install/i.test(String(err && err.message))) {
+      throw new Error(
+        'No Chrome, Edge or Chromium found. Install one, or run: npx playwright install chromium\n' + err.message
+      );
+    }
+    throw err;
+  }
 
   await context.addInitScript(installStealth, { locale });
 
@@ -229,4 +266,4 @@ async function launchStealthContext(userDataDir, options = {}) {
   return context;
 }
 
-module.exports = { launchStealthContext, installStealth, resolveChannel };
+module.exports = { launchStealthContext, installStealth, resolveChannel, resolveBrowser };
