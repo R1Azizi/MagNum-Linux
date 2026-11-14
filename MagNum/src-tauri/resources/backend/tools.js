@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const path = require('node:path');
 const { exec, spawn } = require('node:child_process');
+const { commandShell } = require('./platform');
 
 let FS_BIN_CACHE = null;
 function resolveFsBin() {
@@ -625,7 +626,7 @@ class ProjectTools {
 
   async executeCommand(command) {
     return new Promise((resolve) => {
-      exec(command, { cwd: this.workspaceDir, timeout: 300000, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+      exec(command, { cwd: this.workspaceDir, timeout: 300000, maxBuffer: 10 * 1024 * 1024, shell: commandShell }, (error, stdout, stderr) => {
         let output = stdout || '';
         if (stderr) output += `\n[STDERR]:\n${stderr}`;
         if (error) output += `\n[ERROR]:\n${error.message}`;
