@@ -4,6 +4,7 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const http = require('node:http');
 const { exec, spawn } = require('node:child_process');
+const platform = require('./platform');
 const { WebSocketServer } = require('ws');
 const { launchStealthContext } = require('./stealth');
 const ProjectTools = require('./tools');
@@ -209,14 +210,9 @@ function runTerminalCommand(cmd) {
     broadcast({ event: 'terminal_prompt', cwd: termCwd, code: 0 });
     return;
   }
-  const wrapped = `${cmd}\r\nWrite-Host ('${TERM_MARK}PS1${TERM_MARK}'+(Get-Location).Path+'${TERM_MARK}'+$(if($?){0}else{1})+'${TERM_MARK}')`;
   termBuf = '';
   termLastCode = 0;
-  termShell = spawn('powershell.exe', ['-NoProfile', '-NoLogo', '-Command', wrapped], {
-    cwd: termCwd,
-    env: { ...process.env, NO_COLOR: '1' },
-    windowsHide: true,
-  });
+  termShell = platform.spawnTerminal(cmd, termCwd, TERM_MARK);
   termShell.stdout.on('data', (d) => termFeed(d.toString('utf8'), false));
   termShell.stderr.on('data', (d) => termFeed(d.toString('utf8'), true));
   termShell.on('close', () => {
@@ -345,69 +341,12 @@ async function pushRecentWorkspace(p) {
 loadRecentWorkspaces();
 
 function toggleBrowserVisibility(state = 0, profileName = path.basename(PROFILE_DIR)) {
-  const psCode = `
-Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-public class Win32 {
-    public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
-    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
-    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
-    [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-}
-"@
-$targetPids = (Get-CimInstance Win32_Process -Filter "Name='msedge.exe' OR Name='chrome.exe'" | Where-Object { $_.CommandLine -match '${profileName}' } | Select-Object -ExpandProperty ProcessId)
-$found = $false
-for ($i=0; $i -lt 20; $i++) {
-    $found = $false
-    [Win32]::EnumWindows([Win32+EnumWindowsProc]{
-        param($hWnd, $lParam)
-        $wpid = 0
-        [Win32]::GetWindowThreadProcessId($hWnd, [ref]$wpid) | Out-Null
-        if ($targetPids -contains $wpid) {
-            [Win32]::ShowWindowAsync($hWnd, ${state}) | Out-Null
-            if (${state} -eq 5) { [Win32]::SetForegroundWindow($hWnd) | Out-Null }
-            $script:found = $true
-        }
-        return $true
-    }, [IntPtr]::Zero) | Out-Null
-    if ($found) { break }
-    Start-Sleep -Milliseconds 500
-}
-  `;
-  const base64Code = Buffer.from(psCode, 'utf16le').toString('base64');
-  exec(`powershell -NoProfile -WindowStyle Hidden -EncodedCommand ${base64Code}`);
+  platform.setBrowserVisibility(state, profileName);
 }
 
 
 function openNativeFolderDialog() {
-  return new Promise((resolve) => {
-    const psScript = `
-      Add-Type -AssemblyName System.Windows.Forms
-      $dialog = New-Object System.Windows.Forms.OpenFileDialog
-      $dialog.Title = 'Select Project Folder'
-      $dialog.Filter = 'Folders|*.none'
-      $dialog.FileName = 'Select This Folder'
-      $dialog.CheckFileExists = $false
-      $dialog.CheckPathExists = $true
-      $dialog.ValidateNames = $false
-      $dialog.DereferenceLinks = $false
-      if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        $selected = [System.IO.Path]::GetDirectoryName($dialog.FileName)
-        if (-not $selected) { $selected = $dialog.FileName }
-        [Console]::WriteLine($selected)
-      }
-    `;
-    const base64Code = Buffer.from(psScript, 'utf16le').toString('base64');
-    exec(`powershell -NoProfile -WindowStyle Hidden -EncodedCommand ${base64Code}`, (err, stdout) => {
-      if (err || !stdout.trim()) {
-        resolve(null);
-      } else {
-        resolve(stdout.trim());
-      }
-    });
-  });
+  return platform.pickFolder();
 }
 
 
@@ -2078,7 +2017,7 @@ await sessionStore.appendMessage(currentSessionId, {
       }
       if (data.action === 'open_workspace_explorer') {
         if (currentTools) {
-          exec(`explorer.exe "${currentTools.workspaceDir.replace(/\//g, '\\')}"`);
+          platform.revealInFileManager(currentTools.workspaceDir);
           logTerminal(`Opened workspace in Explorer: ${currentTools.workspaceDir}`, 'sys');
         }
       }
