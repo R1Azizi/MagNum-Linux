@@ -3,20 +3,18 @@ import { AgentIcon, EMOJI_TO_ICON, AgentIconKind } from './agentIcons';
 
 const CARET_SENTINEL = '\uE000';
 
-// Strong RTL letters (Arabic/Persian/Hebrew blocks, presentation forms) vs Latin letters.
-const RTL_LETTER_RE = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/g;
-const LTR_LETTER_RE = /[A-Za-z\u00C0-\u024F]/g;
+// Strong RTL letters (Arabic/Persian/Hebrew blocks, presentation forms) and Latin letters.
+const RTL_LETTER_RE = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
+const LTR_LETTER_RE = /[A-Za-z\u00C0-\u024F]/;
 
-// Picks the base direction of a block by its dominant script rather than its first
-// character: a Persian sentence that opens with a brand name stays RTL, and an English line
-// such as "Tauri v2 + Vite." stays LTR with its trailing period on the correct side.
+// A block that contains any Persian/Arabic text is laid out RTL, even if Latin terms
+// outnumber the Persian words ("پشته فناوری: Tauri v2 + Vite."). Latin runs inside are
+// still displayed LTR by the bidi algorithm. Blocks without RTL letters are LTR.
 // Returns undefined when the text has no letters.
 export function textDir(text: string): 'rtl' | 'ltr' | undefined {
   const plain = text.replace(/`[^`]*`/g, ' ');
-  const rtl = (plain.match(RTL_LETTER_RE) || []).length;
-  const ltr = (plain.match(LTR_LETTER_RE) || []).length;
-  if (rtl === 0 && ltr === 0) return undefined;
-  return rtl >= ltr ? 'rtl' : 'ltr';
+  if (RTL_LETTER_RE.test(plain)) return 'rtl';
+  return LTR_LETTER_RE.test(plain) ? 'ltr' : undefined;
 }
 
 export function formatInline(text: string): React.ReactNode {
