@@ -6,7 +6,7 @@
       "resources/backend": null,
       "resources/backend/*.js": "backend/",
       "resources/backend/package*.json": "backend/",
-      "resources/backend/magnum-fs": "backend/",
+      "resources/backend/magnum-fs": "backend/magnum-fs",
       "resources/backend/node_modules": "backend/node_modules"
     }
   }
