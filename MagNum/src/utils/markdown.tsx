@@ -118,8 +118,10 @@ export function MarkdownRenderer({ content }: { content: string }) {
         color: 'var(--text-main)',
         fontFamily: isRtl ? "'Vazirmatn', 'Plus Jakarta Sans', sans-serif" : undefined,
         textAlign: 'start',
-        overflowWrap: 'anywhere',
-        wordBreak: 'break-word',
+        // Only break inside a word when it would otherwise overflow. word-break/anywhere make
+        // WebKitGTK split Arabic-script words and drop their joining.
+        overflowWrap: 'break-word',
+        minWidth: 0,
       }}
     >
       {parts.map((part, idx) => {
