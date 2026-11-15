@@ -166,6 +166,13 @@ npm run tauri dev
 
 `npm run tauri build` uses `src-tauri/tauri.linux.conf.json` to produce `.deb` and `.AppImage` bundles, without the Windows-only `node.exe` / `magnum-fs.exe`. The `magnum-fs` helper is compiled by `scripts/build-fs.js` and is git-ignored. The Windows installer (`installer/`, `build-setup.js`) does not apply to Linux. The integrated terminal uses `bash`. App data lives in the directory derived from the identifier `com.green.magnum` (`~/.local/share/com.green.magnum`).
 
+**Ubuntu 23.10+ / 24.04: "No usable sandbox!"** These releases set `kernel.apparmor_restrict_unprivileged_userns=1`, which stops Chromium's sandbox from starting for any browser that has no AppArmor profile. Playwright's bundled Chromium (`npx playwright install chromium`) has none, so the first prompt fails with `Chromium sandboxing failed`. Fixes, in order of preference:
+
+1. Install Google Chrome from the `.deb`. It ships an AppArmor profile for `/opt/google/chrome/chrome`, and MagNum auto-detects it, so no flags are needed.
+2. Run with `MAGNUM_NO_SANDBOX=1 npm run tauri dev`. This starts the automation browser without its sandbox, so use it only if you accept that.
+
+Chrome may also show an infobar about `--disable-blink-features=AutomationControlled`. It is cosmetic: MagNum passes that flag to hide the automation marker from the chat sites.
+
 ---
 
 ## Building Production Release
