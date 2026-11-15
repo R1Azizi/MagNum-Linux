@@ -17,6 +17,13 @@ export function textDir(text: string): 'rtl' | 'ltr' | undefined {
   return LTR_LETTER_RE.test(plain) ? 'ltr' : undefined;
 }
 
+// Built from the icon map so no empty alternative can slip in: an empty alternative makes
+// split() cut between every character, which breaks Arabic/Persian letter joining in WebKit.
+const EMOJI_SPLIT_RE = new RegExp(
+  '(' + Object.keys(EMOJI_TO_ICON).sort((a, b) => b.length - a.length).join('|') + ')',
+  'g'
+);
+
 export function formatInline(text: string): React.ReactNode {
   if (!text) return null;
   const tokens = text.split(/(`[^`]+`|\*\*[^*]+\*\*|\uE000)/g);
@@ -44,7 +51,7 @@ export function formatInline(text: string): React.ReactNode {
     if (token.startsWith('**') && token.endsWith('**')) {
       return <strong key={i} style={{ color: 'var(--text-main)', fontWeight: 700, unicodeBidi: 'isolate' }}>{token.slice(2, -2)}</strong>;
     }
-    const parts = token.split(/(📖||🔎||✅||💻||🎉|⚠️||⏳|📤|✔|✘)/g);
+    const parts = token.split(EMOJI_SPLIT_RE);
     if (parts.length === 1) return token;
     return parts.map((p, j) => {
       const kind = EMOJI_TO_ICON[p] as AgentIconKind | undefined;
