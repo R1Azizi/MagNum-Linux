@@ -86,8 +86,12 @@ class EmbeddedBrowserManager {
     if (this.resizeSuspended) return;
 
     const wv = await this.ensure();
-    await wv.setPosition(new LogicalPosition(Math.max(0, Math.round(rect.x)), Math.max(0, Math.round(rect.y))));
-    await wv.setSize(new LogicalSize(Math.max(10, Math.round(rect.width)), Math.max(10, Math.round(rect.height))));
+    const rx = Math.max(0, Math.round(rect.x)), ry = Math.max(0, Math.round(rect.y));
+    const rw = Math.max(10, Math.round(rect.width)), rh = Math.max(10, Math.round(rect.height));
+    await wv.setPosition(new LogicalPosition(rx, ry));
+    await wv.setSize(new LogicalSize(rw, rh));
+    // Linux: child webviews are stacked in a GtkBox; overlay them via a native command.
+    await invoke('place_embedded_browser', { x: rx, y: ry, width: rw, height: rh }).catch(() => {});
     if (!this.isVisible) {
       await wv.show().catch(() => {});
       this.isVisible = true;
@@ -161,10 +165,14 @@ class EmbeddedBrowserManager {
       (newWv as any).once('tauri://error', (e: any) => reject(e)).catch(reject);
     });
 
+    this.webview = newWv;
+    await invoke('place_embedded_browser', {
+      x: Math.max(0, Math.round(this.currentRect.x)), y: Math.max(0, Math.round(this.currentRect.y)),
+      width: Math.max(10, Math.round(this.currentRect.width)), height: Math.max(10, Math.round(this.currentRect.height))
+    }).catch(() => {});
     if (this.isVisible) {
       await newWv.show().catch(() => {});
     }
-    this.webview = newWv;
   }
 
   async back(): Promise<void> {

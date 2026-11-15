@@ -89,6 +89,65 @@ fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// On Linux, Tauri packs child webviews into the window's vertical GtkBox, so they
+/// stack *below* the main webview instead of floating over it. Re-parent the embedded
+/// browser into a GtkOverlay on top of the main webview and position it with margins.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn place_embedded_browser(
+    app: tauri::AppHandle,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+) -> Result<(), String> {
+    use gtk::prelude::*;
+
+    let wv = app
+        .get_webview("magnum-embedded-browser")
+        .ok_or_else(|| "embedded browser not found".to_string())?;
+    wv.with_webview(move |pv| {
+        let child: gtk::Widget = pv.inner().upcast();
+        let Some(parent) = child.parent() else { return };
+
+        let overlay = if let Ok(ov) = parent.clone().downcast::<gtk::Overlay>() {
+            ov
+        } else if let Ok(vbox) = parent.downcast::<gtk::Box>() {
+            let main = vbox
+                .children()
+                .into_iter()
+                .find(|c| *c != child && c.type_().name() == "WebKitWebView");
+            let Some(main) = main else { return };
+            let ov = gtk::Overlay::new();
+            vbox.remove(&main);
+            vbox.remove(&child);
+            ov.add(&main);
+            ov.add_overlay(&child);
+            ov.set_overlay_pass_through(&child, false);
+            vbox.pack_start(&ov, true, true, 0);
+            ov.show();
+            main.show();
+            ov
+        } else {
+            return;
+        };
+        let _ = overlay;
+
+        child.set_halign(gtk::Align::Start);
+        child.set_valign(gtk::Align::Start);
+        child.set_margin_start(x.max(0));
+        child.set_margin_top(y.max(0));
+        child.set_size_request(width.max(10), height.max(10));
+    })
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+fn place_embedded_browser(_x: i32, _y: i32, _width: i32, _height: i32) -> Result<(), String> {
+    Ok(())
+}
+
 #[tauri::command]
 fn set_app_theme(window: tauri::Window, theme: String) -> Result<(), String> {
     match theme.as_str() {
@@ -327,7 +386,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![greet, set_app_theme, open_url, read_ws_token, get_backend_port])
+        .invoke_handler(tauri::generate_handler![greet, set_app_theme, open_url, read_ws_token, get_backend_port, place_embedded_browser])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
