@@ -194,6 +194,105 @@ The resulting standalone setup executable will be generated at:
 installer/src-tauri/target/release/MagNum-Setup.exe
 ```
 
+> The Windows installer pipeline (`installer/`, `build-setup.js`, `node.exe`, `magnum-fs.exe`) is Windows-only and does not apply to Linux. See **Linux Support** below for the Linux build path.
+
+---
+
+## Linux Support
+
+MagNum runs natively on Linux (Debian/Ubuntu and derivatives tested) using the same 3-tier architecture as Windows. This section covers dependencies, how to run, and every adaptation made to the originally Windows-only codebase.
+
+### System Dependencies (Debian / Ubuntu)
+
+Runtime and build dependencies for the desktop app and its native dependencies:
+
+```bash
+sudo apt update
+sudo apt install -y \
+  libwebkit2gtk-4.1-dev \
+  build-essential curl wget file \
+  libxdo-dev libssl-dev \
+  libayatana-appindicator3-dev librsvg2-dev \
+  zenity \
+  chromium \
+  bash
+```
+
+| Dependency | Why it is required |
+| --- | --- |
+| `libwebkit2gtk-4.1-dev` + build toolchain | Tauri v2 native webview and Rust/C toolchain to compile `src-tauri` |
+| `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`, `librsvg2-dev` | Tauri native integrations (windowing, TLS, tray, icons) |
+| `zenity` | Native GTK folder-picker / dialog backend on Linux (replaces the Windows native dialog calls) |
+| `chromium` (or `google-chrome`, `chromium-browser`) | Browser engine driven by the stealth automation for DeepSeek / Gemini chat UIs |
+| `bash` | Shell used by `execute_command` and the integrated terminal |
+
+The `.deb` package declares `zenity` and `chromium` (with `chromium-browser` / `google-chrome` as alternatives) as dependencies, so `apt` pulls them automatically on install.
+
+Also install [Rust via rustup](https://rustup.rs) and **Node.js 20.x or 22.x+** (`node` must be on `PATH`).
+
+### Browser Requirement
+
+MagNum auto-detects an installed browser at launch. On Linux it looks for:
+
+- Google Chrome: `/usr/bin/google-chrome`, `/usr/bin/google-chrome-stable`, `/opt/google/chrome/chrome`
+- Microsoft Edge: `/usr/bin/microsoft-edge`, `/usr/bin/microsoft-edge-stable`, `/opt/microsoft/msedge/msedge`
+- Chromium: `/usr/bin/chromium`, `/usr/bin/chromium-browser`, `/snap/bin/chromium`
+
+If none is found, install Chromium via `apt` or run `npx playwright install chromium` inside `MagNum/src-tauri/resources/backend`. You can force a specific browser with `BROWSER_CHANNEL=chrome|msedge|chromium`.
+
+### How to Run (Linux)
+
+```bash
+git clone https://github.com/R1Azizi/MagNum-Linux.git
+cd MagNum-Linux
+
+node download-fonts.js                       # fetch offline font bundle (one-time)
+
+cd MagNum
+npm install                                  # frontend deps
+cd src-tauri/resources/backend
+npm install                                  # backend engine deps
+cd ../../..                                  # back to MagNum/
+
+npm run tauri dev                            # development with hot-reload
+```
+
+Build production `.deb` and `.AppImage` bundles (uses `src-tauri/tauri.linux.conf.json`):
+
+```bash
+cd MagNum
+npm run tauri build
+```
+
+Build artifacts land in `MagNum/src-tauri/target/release/bundle/` (`deb/` and `appimage/`). The `magnum-fs` helper is compiled by `scripts/build-fs.js` and is git-ignored.
+
+**Ubuntu 23.10+ / 24.04 sandbox note:** these releases set `kernel.apparmor_restrict_unprivileged_userns=1`, which blocks Chromium's sandbox unless the browser ships an AppArmor profile. Install Google Chrome from its `.deb` (it ships a profile and MagNum auto-detects it), or run with `MAGNUM_NO_SANDBOX=1 npm run tauri dev` if you accept disabling the sandbox.
+
+### What Changed for Linux
+
+The Linux port reuses the exact Windows architecture, only swapping OS-specific integration points:
+
+- **Rust core (`src-tauri/src/lib.rs`)** — builds and runs on Linux; the Windows Job Object process-tree termination is replaced by POSIX process-group signalling; dynamic CDP allocation and the single-instance guard work cross-platform.
+- **Backend platform layer (`resources/backend/platform.js`, new)** — all OS-specific operations (terminal spawn, folder picker, reveal-in-file-manager, browser show/hide) are isolated in one module. Windows branches are the original code moved verbatim; Linux/macOS branches are additions.
+- **Terminal / `execute_command`** — uses `bash` on Linux/macOS (with a `trap ... EXIT` marker to report `cwd` and exit status) and PowerShell on Windows. `tools.js` runs commands through `/bin/bash` when available.
+- **Agent system prompt** — OS, shell, and path hints follow `process.platform`, so the model is told it is talking to `bash` and POSIX paths on Linux.
+- **Browser detection (`resources/backend/stealth.js`)** — new Linux candidate paths for Chrome, Edge, and Chromium (including Snap). Chromium has no Playwright channel, so it is launched by `executablePath`; optional `--no-sandbox` is opt-in via `MAGNUM_NO_SANDBOX=1`.
+- **Folder picker / dialogs** — backed by `zenity` on Linux instead of native Windows dialogs.
+- **Embedded browser (`src/utils/embeddedBrowser.ts`)** — overlaid on the main webview on Linux (the Windows path uses a child webview window).
+- **Update gate (`src/components/update/UpdateGate.tsx`)** — self-update is skipped on Linux (`setState('uptodate')`), because the current updater endpoint serves Windows artifacts only.
+- **Bundle config (`src-tauri/tauri.linux.conf.json`, new)** — builds `.deb` and `.AppImage` from the JS backend without `node.exe` / `magnum-fs.exe`, and declares `zenity` + `chromium` as `.deb` dependencies.
+- **Build scripts** — `scripts/build-fs.js` chmods the generated `magnum-fs` binary on Linux; the Linux binary is git-ignored.
+
+### How Windows-Only Code Was Overcome
+
+The original codebase hard-coded `powershell.exe`, `node.exe`, `.exe` resource paths, Windows dialog APIs, and Windows process termination. Rather than forking the app, the port introduces a **single platform-abstraction seam**:
+
+1. **One module, two implementations.** `platform.js` exposes the OS-specific functions (`spawnTerminal`, folder picker, reveal, browser show/hide, `commandShell`). Every Windows branch is the original code unchanged; Linux/macOS branches sit beside it. Callers in `server.js` no longer contain `if (win32)` scattered around.
+2. **Process lifecycle via process groups.** The Windows Job Object (which auto-kills child processes) has no direct Linux equivalent, so the terminal spawns `bash` as a **detached process group** and `child.kill()` sends the signal to `-pid`, terminating the whole tree — the same guarantee, using POSIX primitives.
+3. **Platform-aware prompt and shell.** The agent's system prompt and `execute_command` both branch on `process.platform`, so the model receives correct shell/path hints instead of Windows ones, keeping tool calls valid on Linux.
+4. **Browser resolution, not a fixed path.** `stealth.js` builds a per-OS candidate list and resolves channel + `executablePath` at launch, so the same code works whether Chrome, Edge, or Chromium is installed.
+5. **Separate bundle config, shared source.** `tauri.linux.conf.json` overrides only the bundle resources/dependencies; the Rust source, React frontend, and Node backend are shared with Windows, so Linux builds do not fork the application logic.
+
 ---
 
 ## Privacy, Security & Architecture Disclosure
