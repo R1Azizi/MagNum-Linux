@@ -146,9 +146,6 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     } catch {}
   }, [theme]);
 
-  useEffect(() => {
-    sendAction('set_language', { lang: language });
-  }, [language, sendAction]);
 
   const handleLanguageChange = (newLang: Language) => {
     setLanguage(newLang);

@@ -50,7 +50,14 @@ export const UpdateGate: React.FC<{ children: React.ReactNode }> = ({ children }
     }
   }, []);
 
-  useEffect(() => { doCheck(); }, [doCheck]);
+  useEffect(() => {
+    if (navigator.userAgent.toLowerCase().includes('linux')) {
+      setState('uptodate');
+      return;
+    }
+
+    doCheck();
+  }, [doCheck]);
 
   const handleUpdate = async () => {
     if (!update) return;

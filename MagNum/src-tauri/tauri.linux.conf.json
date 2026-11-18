@@ -2,6 +2,11 @@
   "bundle": {
     "active": true,
     "targets": ["deb", "appimage"],
+    "linux": {
+      "deb": {
+        "depends": ["zenity", "chromium | chromium-browser | google-chrome"]
+      }
+    },
     "resources": {
       "resources/backend": null,
       "resources/backend/*.js": "backend/",
