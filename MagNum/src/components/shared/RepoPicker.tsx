@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Search, Plus, Folder, FolderOpen, Check, ChevronRight } from 'lucide-react';
+import { Search, Plus, Folder, FolderOpen, Check, ChevronRight, HardDrive } from 'lucide-react';
 
 interface RepoPickerMenuProps {
   open: boolean;
@@ -10,6 +10,7 @@ interface RepoPickerMenuProps {
   onSelect: (path: string) => void;
   onScratch: () => void;
   onOpenFolder: () => void;
+  onBrowseInApp?: () => void;
   posStyle?: React.CSSProperties; 
 }
 
@@ -17,7 +18,7 @@ export const isScratchPath = (p: string) => /[/\\]scratch[/\\]scratch-/i.test(p 
 export const scratchLabel = 'Start from scratch';
 
 export const RepoPickerMenu: React.FC<RepoPickerMenuProps> = ({
-  open, onClose, recents, activePath, isScratch, onSelect, onScratch, onOpenFolder, posStyle
+  open, onClose, recents, activePath, isScratch, onSelect, onScratch, onOpenFolder, onBrowseInApp, posStyle
 }) => {
   const [q, setQ] = useState('');
   const ref = useRef<HTMLDivElement>(null);
@@ -70,6 +71,13 @@ export const RepoPickerMenu: React.FC<RepoPickerMenuProps> = ({
           <span style={{ flex: 1 }}>Use Existing...</span>
           <ChevronRight size={13} color="var(--text-dim)" style={{ flexShrink: 0 }} />
         </div>
+        {onBrowseInApp && (
+          <div className="hover-bright" style={row} onClick={() => { onBrowseInApp(); onClose(); }} title="Works on every system — no OS dialog needed">
+            <HardDrive size={14} color="var(--accent-green)" style={{ flexShrink: 0 }} />
+            <span style={{ flex: 1 }}>Browse inside app…</span>
+            <ChevronRight size={13} color="var(--text-dim)" style={{ flexShrink: 0 }} />
+          </div>
+        )}
       </div>
     </div>
   );

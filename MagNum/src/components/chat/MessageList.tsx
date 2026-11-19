@@ -28,6 +28,7 @@ import { EditSummaryRows } from '../shared/EditDiff';
 import { AgentIcon, ACTION_TO_ICON } from '../../utils/agentIcons';
 import { EditDetail } from '../../types';
 import { Tooltip } from '../shared/Tooltip';
+import { AttachmentPreview } from '../shared/AttachmentViews';
 
 
 
@@ -355,9 +356,14 @@ export const MessageList: React.FC<MessageListProps> = ({
                     overflowWrap: 'anywhere'
                   }}
                 >
+                  {Array.isArray(m.attachments) && m.attachments.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: cleanText ? 8 : 0 }}>
+                      <AttachmentPreview attachments={m.attachments} variant="message" />
+                    </div>
+                  )}
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap', minWidth: 0, width: '100%' }}>
                     {skillId && <SkillChip id={skillId} size="sm" />}
-                    <span style={{ whiteSpace: 'pre-wrap', flex: 1, minWidth: 0, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{cleanText}</span>
+                    {cleanText && <span style={{ whiteSpace: 'pre-wrap', flex: 1, minWidth: 0, wordBreak: 'break-word', overflowWrap: 'anywhere' }}>{cleanText}</span>}
                   </div>
                   {onReRunPrompt && (
                     <button

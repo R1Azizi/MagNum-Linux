@@ -158,15 +158,59 @@ class DeepSeekDriver {
   async uploadFiles(filePaths = []) {
     if (!this.page || this.page.isClosed() || !filePaths || filePaths.length === 0) return;
     try {
-      const fileInput = await this.page.locator('input[type="file"]').first();
+      const fileInput = this.page.locator('input[type="file"]').first();
       if (await fileInput.count() > 0) {
         console.log(`📤 Uploading ${filePaths.length} file(s) to DeepSeek Web...`);
         await fileInput.setInputFiles(filePaths);
-        await this.page.waitForTimeout(3000);
+        const names = filePaths.map(p => require('node:path').basename(p));
+        const deadline = Date.now() + Math.min(60000, 8000 + filePaths.length * 15000);
+        while (Date.now() < deadline) {
+          const ok = await this.page.evaluate((ns) => {
+            const body = document.body ? document.body.innerText : '';
+            return ns.every(n => body.includes(n));
+          }, names).catch(() => false);
+          if (ok) break;
+          await this.page.waitForTimeout(700);
+        }
+        await this.page.waitForTimeout(800);
       }
     } catch (err) {
       console.warn('⚠️ File upload warning:', err.message);
     }
+  }
+
+  async clearStagedMedia(names = null) {
+    if (!this.page || this.page.isClosed()) return;
+    try {
+      for (let i = 0; i < 15; i++) {
+        const removed = await this.page.evaluate((wantNames) => {
+          const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
+          const isRemove = (b) => /remove|delete|حذف/i.test(
+            (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '')
+          );
+          if (!wantNames) {
+            const b = btns.find(x => isRemove(x) && /file|attach/i.test((x.getAttribute('aria-label') || '') + (x.getAttribute('title') || '')));
+            if (b) { b.click(); return true; }
+            return false;
+          }
+          for (const n of wantNames) {
+            const el = Array.from(document.querySelectorAll('div,span')).find(e =>
+              e.children.length === 0 && (e.textContent || '').trim() === n
+            );
+            if (!el) continue;
+            let scope = el;
+            for (let up = 0; up < 6 && scope; up++) {
+              const b = Array.from(scope.querySelectorAll('button, div[role="button"]')).find(isRemove);
+              if (b) { b.click(); return true; }
+              scope = scope.parentElement;
+            }
+          }
+          return false;
+        }, names).catch(() => false);
+        if (!removed) break;
+        await this.page.waitForTimeout(300);
+      }
+    } catch (e) { console.warn('DeepSeek clearStagedMedia warning:', e.message); }
   }
 
   

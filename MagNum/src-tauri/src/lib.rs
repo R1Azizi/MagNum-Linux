@@ -164,6 +164,16 @@ fn get_backend_port(app_handle: tauri::AppHandle) -> Result<u16, String> {
         .and_then(|p| p.parse::<u16>().map_err(|e| e.to_string()))
 }
 
+#[tauri::command]
+async fn pick_folder(window: tauri::Window) -> Result<Option<String>, String> {
+    let folder = rfd::AsyncFileDialog::new()
+        .set_parent(&window)
+        .set_title("Select Project Folder")
+        .pick_folder()
+        .await;
+    Ok(folder.map(|f| f.path().to_string_lossy().to_string()))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -252,7 +262,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![greet, set_app_theme, open_url, read_ws_token, get_backend_port])
+        .invoke_handler(tauri::generate_handler![greet, set_app_theme, open_url, read_ws_token, get_backend_port, pick_folder])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
