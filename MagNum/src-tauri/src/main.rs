@@ -38,6 +38,15 @@ fn main() {
             "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
             format!("--remote-debugging-port={}", cdp_port),
         );
+
+        // Linux/WebKitGTK: prevent GTK from bailing out (SIGTRAP) when glycin's
+        // sandboxed SVG loader cannot load icons. Disabling the glycin sandbox
+        // avoids the failing bwrap invocation entirely.
+        #[cfg(target_os = "linux")]
+        {
+            std::env::set_var("GLYCIN_SANDBOX", "none");
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
     }
 
     magnum_lib::run()
