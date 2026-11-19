@@ -149,11 +149,11 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
   const handleOpenFolder = useCallback(async () => {
     try {
       const picked = await invoke<string | null>('pick_folder');
-      if (picked) openWorkspace(picked);
-      return;
-    } catch {
-      sendAction('choose_folder');
-    }
+      if (picked) { openWorkspace(picked); return; }
+    } catch {}
+    // Native picker unavailable (Linux/macOS) or cancelled → backend picker
+    // (zenity/kdialog on Linux, osascript on macOS, PowerShell on Windows).
+    sendAction('choose_folder');
   }, [openWorkspace, sendAction]);
 
   const handleBrowseInApp = useCallback(() => {
