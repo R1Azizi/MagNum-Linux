@@ -6,8 +6,8 @@ import {
   Box,
   ChevronRight,
   X,
-  FileText,
   Sparkles,
+  Brain,
   PanelRight,
   PanelLeft,
   ChevronDown
@@ -18,6 +18,8 @@ import { SKILLS, SkillDef } from '../../utils/skills';
 import { Tooltip } from '../shared/Tooltip';
 import { RepoPickerMenu, isScratchPath, scratchLabel } from '../shared/RepoPicker';
 import { ConnectionDock, ProvidersStatus, ProviderName } from '../layout/ConnectionDock';
+import { AttachmentPreview } from '../shared/AttachmentViews';
+import { stageAttachments as stageToProvider, unstageAttachment, trackComposerAttachments } from '../../utils/attachmentStaging';
 
 interface EmptyStateProps {
   repoName: string;
@@ -30,6 +32,7 @@ interface EmptyStateProps {
   onToggleDeepThink: () => void;
   onToggleAutoPatch: () => void;
   onOpenFolder: () => void;
+  onBrowseInApp?: () => void;
   onSubmit: (text: string, attachments: Attachment[], skillId: string | null) => void;
   onOpenRightTab?: (tab: RightPanelTab) => void;
   activeRightTab?: RightPanelTab;
@@ -41,10 +44,12 @@ interface EmptyStateProps {
   onTogglePanel?: () => void;
   isSidebarOpen?: boolean;
   onToggleSidebar?: () => void;
-  selectedProvider: 'deepseek' | 'gemini';
-  onSelectProvider: (provider: 'deepseek' | 'gemini') => void;
+  selectedProvider: 'deepseek' | 'gemini' | 'chatgpt';
+  onSelectProvider: (provider: 'deepseek' | 'gemini' | 'chatgpt') => void;
   geminiThinking?: 'low' | 'medium' | 'high';
   onCycleThinking?: () => void;
+  chatgptThink?: boolean;
+  onToggleChatgptThink?: () => void;
   providers: ProvidersStatus;
   onConnectProvider: (p: ProviderName) => void;
   onShowProvider: (p: ProviderName) => void;
@@ -61,6 +66,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   onOpenWorkspace,
   onStartScratch,
   onOpenFolder,
+  onBrowseInApp,
   isDeepThink,
   onToggleDeepThink,
   onSubmit,
@@ -72,6 +78,8 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   onSelectProvider,
   geminiThinking,
   onCycleThinking,
+  chatgptThink = true,
+  onToggleChatgptThink,
   providers,
   onConnectProvider,
   onShowProvider,
@@ -108,6 +116,13 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
   }, [inputVal]);
+
+  useEffect(() => {
+    trackComposerAttachments(attachments);
+    if (attachments.length > 0) {
+      stageToProvider(selectedProvider, attachments);
+    }
+  }, [attachments, selectedProvider]);
 
   const skillsList = SKILLS;
   const isScratch = isScratchPath(activeWorkspace);
@@ -150,6 +165,8 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   const MAX_ATTACHMENTS = 10;
   const MAX_FILE_SIZE = 100 * 1024 * 1024; 
   const MAX_TOTAL_SIZE = 300 * 1024 * 1024; 
+  const MAX_MESSAGE_CHARS = 65000;
+  const CHAR_COUNTER_AT = Math.floor(MAX_MESSAGE_CHARS * 0.9);
 
   const addFiles = (files: FileList | File[]) => {
     const incoming = Array.from(files);
@@ -229,6 +246,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
 
   const removeAttachment = (id: string) => {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
+    unstageAttachment(selectedProvider, id);
   };
 
   return (
@@ -288,6 +306,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
             onSelect={onOpenWorkspace}
             onScratch={onStartScratch}
             onOpenFolder={onOpenFolder}
+            onBrowseInApp={onBrowseInApp}
           />
         </div>
       </div>
@@ -302,25 +321,16 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
         }}
         style={{ width: '100%', maxWidth: '640px', background: 'var(--bg-surface)', border: isDragging ? '1px dashed var(--accent-green)' : '1px solid var(--border-subtle)', borderRadius: '14px', padding: '12px 14px', boxShadow: '0 10px 40px var(--shadow-heavy)', display: 'flex', flexDirection: 'column', gap: '8px', position: 'relative' }}>
         {attachments.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '4px' }}>
-            {attachments.map((att) => (
-              <div key={att.id} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '3px 8px', fontSize: '11px', color: 'var(--text-main)', maxWidth: '200px' }}>
-                {att.type.startsWith('image/') ? (
-                  <img src={att.base64} alt={att.name} style={{ width: '16px', height: '16px', borderRadius: '3px', objectFit: 'cover' }} />
-                ) : (
-                  <FileText size={14} color="var(--accent-green)" />
-                )}
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{att.name}</span>
-                <X size={12} style={{ cursor: 'pointer', color: 'var(--diff-del-text)' }} onClick={() => removeAttachment(att.id)} />
-              </div>
-            ))}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 6, alignItems: 'center' }}>
+            <AttachmentPreview attachments={attachments} variant="composer" onRemove={removeAttachment} />
           </div>
         )}
 
           <textarea
             ref={textareaRef}
             value={inputVal}
-            onChange={(e) => setInputVal(e.target.value)}
+            maxLength={MAX_MESSAGE_CHARS}
+            onChange={(e) => setInputVal(e.target.value.slice(0, MAX_MESSAGE_CHARS))}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
             placeholder="Plan, Build, / for skills, @ for context — paste screenshot or drop files here"
@@ -389,6 +399,11 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            {inputVal.length >= CHAR_COUNTER_AT && (
+              <span className="code-font" style={{ fontSize: 10, flexShrink: 0, color: inputVal.length >= MAX_MESSAGE_CHARS ? 'var(--diff-del-text)' : 'var(--text-dim)' }}>
+                {inputVal.length}/{MAX_MESSAGE_CHARS}
+              </span>
+            )}
             {selectedProvider === 'deepseek' ? (
               <div
                 onClick={onToggleDeepThink}
@@ -398,7 +413,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
                 <Sparkles size={11} />
                 <span style={{ fontWeight: 600 }}>DeepThink</span>
               </div>
-            ) : (
+            ) : selectedProvider === 'gemini' ? (
               <button
                 onClick={onCycleThinking}
                 title={`Gemini Thinking Level: ${geminiThinking || 'medium'} — click to change (Low / Medium / High)`}
@@ -411,6 +426,22 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
               >
                 <Sparkles size={11} />
                 <span style={{ fontWeight: 600, textTransform: 'capitalize' }}>{geminiThinking || 'medium'}</span>
+              </button>
+            ) : (
+              <button
+                onClick={onToggleChatgptThink}
+                title={chatgptThink ? 'Think is ON (default) — extended reasoning' : 'Think is OFF — click to enable'}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 5, fontSize: 11,
+                  color: chatgptThink ? '#10a37f' : 'var(--text-muted)',
+                  padding: '3px 8px', borderRadius: 8,
+                  background: chatgptThink ? 'rgba(16,163,127,0.12)' : 'var(--bg-card)',
+                  border: `1px solid ${chatgptThink ? 'rgba(16,163,127,0.4)' : 'var(--border-subtle)'}`,
+                  flexShrink: 0, cursor: 'pointer'
+                }}
+              >
+                <Brain size={11} />
+                <span style={{ fontWeight: 600 }}>Think</span>
               </button>
             )}
             <ConnectionDock

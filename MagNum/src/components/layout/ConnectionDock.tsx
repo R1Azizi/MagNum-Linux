@@ -2,8 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Globe, LogOut, ChevronDown, Check, MonitorOff, Lock } from 'lucide-react';
 
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
-export type ProviderName = 'deepseek' | 'gemini';
-export interface ProvidersStatus { deepseek: ConnectionStatus; gemini: ConnectionStatus; }
+export type ProviderName = 'deepseek' | 'gemini' | 'chatgpt';
+export interface ProvidersStatus { deepseek: ConnectionStatus; gemini: ConnectionStatus; chatgpt: ConnectionStatus; }
 
 interface ConnectionDockProps {
   providers: ProvidersStatus;
@@ -18,7 +18,8 @@ interface ConnectionDockProps {
 
 const META: Record<ProviderName, { label: string; color: string }> = {
   deepseek: { label: 'DeepSeek', color: 'var(--accent-green)' },
-  gemini: { label: 'Gemini', color: '#4285f4' }
+  gemini: { label: 'Gemini', color: '#4285f4' },
+  chatgpt: { label: 'ChatGPT', color: '#10a37f' }
 };
 
 const STATUS_TEXT: Record<ConnectionStatus, string> = {
@@ -139,6 +140,7 @@ export const ConnectionDock: React.FC<ConnectionDockProps> = ({
           </span>
           {row('deepseek')}
           {row('gemini')}
+          {row('chatgpt')}
         </div>
       )}
     </div>

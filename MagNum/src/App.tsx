@@ -14,6 +14,8 @@ import { stripSkillPrefix } from './utils/skills';
 import { FilterModal } from './components/modals/FilterModal';
 import { SettingsView } from './components/settings/SettingsView';
 import { UpdateGate } from './components/update/UpdateGate';
+import { ImageViewerHost } from './components/shared/ImageViewer';
+import { FolderPickerModal } from './components/shared/FolderPickerModal';
 
 import './App.css';
 
@@ -99,6 +101,9 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     setIsDeepThink,
     selectedProvider,
     setSelectedProvider,
+    defaultProvider,
+    setDefaultProvider,
+    setDeepThink,
     sessions,
     currentSessionId,
     pendingPatches,
@@ -122,17 +127,41 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     networkRetry,
     geminiThinking,
     setGeminiThinking,
+    chatgptThink,
+    setChatgptThink,
     termLines,
     termCwd,
     sendTerminalInput,
     sendTerminalInterrupt,
-    sendTerminalRestart
+    sendTerminalRestart,
+    folderPickerOpen,
+    setFolderPickerOpen,
+    folderPickerNotice,
+    setFolderPickerNotice,
+    browseDir
   } = useMagNumSocket((tab) => { if (tab) openRightTab(tab); });
 
   const cycleGeminiThinking = useCallback(() => {
     const order: ('low' | 'medium' | 'high')[] = ['low', 'medium', 'high'];
     setGeminiThinking(order[(order.indexOf(geminiThinking) + 1) % 3]);
   }, [geminiThinking, setGeminiThinking]);
+
+  const handleOpenFolder = useCallback(async () => {
+    try {
+      const picked = await invoke<string | null>('pick_folder');
+      if (picked) openWorkspace(picked);
+      return;
+    } catch {
+      sendAction('choose_folder');
+    }
+  }, [openWorkspace, sendAction]);
+
+  const handleBrowseInApp = useCallback(() => {
+    setFolderPickerNotice('');
+    setFolderPickerOpen(true);
+  }, [setFolderPickerNotice, setFolderPickerOpen]);
+
+
 
   const repoName = activeWorkspace ? activeWorkspace.split(/[\\/]/).filter(Boolean).pop() || activeWorkspace : 'No Repo';
 
@@ -188,7 +217,7 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
   isSidebarOpen={isSidebarOpen}
   onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
   onNewChat={() => sendAction('new_chat')}
-  onOpenFolder={() => sendAction('choose_folder')}
+  onOpenFolder={handleOpenFolder}
   onToggleTab={(t) => { if (rightPanelTab === t) setRightPanelTab(null); else openRightTab(t); }}
   onOpenFilters={() => setIsSettingsOpen(true)}
   onDiagnose={() => sendAction('diagnose')}
@@ -196,18 +225,18 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
 
       {isSettingsOpen ? (
         <SettingsView
-          provider={selectedProvider}
+          defaultProvider={defaultProvider}
+          onDefaultProviderChange={setDefaultProvider}
           geminiThinking={geminiThinking}
           onGeminiThinkingChange={setGeminiThinking}
+          chatgptThink={chatgptThink}
+          onChatgptThinkChange={setChatgptThink}
           currentLang={language}
           onLanguageChange={handleLanguageChange}
           currentTheme={theme}
           onThemeChange={setTheme}
           isDeepThink={isDeepThink}
-          onToggleDeepThink={() => {
-            setIsDeepThink(!isDeepThink);
-            sendAction('set_deep_think', { enabled: !isDeepThink });
-          }}
+          onDeepThinkChange={setDeepThink}
           autoApplyPatch={autoApplyPatch}
           onToggleAutoPatch={() => setAutoApplyPatch(!autoApplyPatch)}
           requireCommandApproval={requireCommandApproval}
@@ -227,7 +256,8 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
 
               recentWorkspaces={recentWorkspaces}
               onNewChat={() => sendAction('new_chat')}
-              onOpenFolder={() => sendAction('choose_folder')}
+              onOpenFolder={handleOpenFolder}
+              onBrowseInApp={handleBrowseInApp}
               onOpenWorkspace={(p) => openWorkspace(p)}
               onStartScratch={() => sendAction('start_scratch')}
               onOpenFilters={() => setIsSettingsOpen(true)}
@@ -253,7 +283,8 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
                   sendAction('set_deep_think', { enabled: !isDeepThink });
                 }}
                 onToggleAutoPatch={() => setAutoApplyPatch(!autoApplyPatch)}
-                onOpenFolder={() => sendAction('choose_folder')}
+                onOpenFolder={handleOpenFolder}
+                onBrowseInApp={handleBrowseInApp}
                 onSubmit={(text, attachments, skillId) => sendPrompt(text, autoApplyPatch, [], ignoredPatterns, attachments, skillId, !requireCommandApproval)}
                 onOpenIDE={() => sendAction('open_workspace_explorer')}
                 activeRightTab={rightPanelTab}
@@ -264,21 +295,25 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
                 onSelectProvider={setSelectedProvider}
                 geminiThinking={geminiThinking}
                 onCycleThinking={cycleGeminiThinking}
+                chatgptThink={chatgptThink}
+                onToggleChatgptThink={() => setChatgptThink(!chatgptThink)}
                 providers={providersStatus}
-                onConnectProvider={(p) => sendAction(p === 'gemini' ? 'connect_gemini' : 'open_browser')}
+                onConnectProvider={(p) => sendAction(p === 'gemini' ? 'connect_gemini' : p === 'chatgpt' ? 'connect_chatgpt' : 'open_browser')}
                 onShowProvider={(p) => sendAction('show_provider_browser', { provider: p })}
                 onHideProvider={(p) => sendAction('hide_provider_browser', { provider: p })}
                 onDisconnectProvider={async (p) => {
                   const ok = await confirmDialog({
-                    title: p === 'gemini' ? 'Disconnect Gemini' : 'Disconnect DeepSeek',
+                    title: p === 'gemini' ? 'Disconnect Gemini' : p === 'chatgpt' ? 'Disconnect ChatGPT' : 'Disconnect DeepSeek',
                     message: p === 'gemini'
                       ? 'Disconnect Gemini? The saved Google profile is kept for fast reconnect.'
-                      : 'Disconnect from DeepSeek? Your saved login profile will be kept, so the app reconnects automatically next time.',
+                      : p === 'chatgpt'
+                        ? 'Disconnect ChatGPT? The saved OpenAI profile is kept for fast reconnect.'
+                        : 'Disconnect from DeepSeek? Your saved login profile will be kept, so the app reconnects automatically next time.',
                     confirmLabel: 'Disconnect',
                     cancelLabel: 'Cancel',
                     danger: true
                   });
-                  if (ok) sendAction(p === 'gemini' ? 'logout_gemini' : 'logout');
+                  if (ok) sendAction(p === 'gemini' ? 'logout_gemini' : p === 'chatgpt' ? 'logout_chatgpt' : 'logout');
                 }}
                 providerLocked={Boolean(currentSessionId)}
               />
@@ -314,13 +349,15 @@ isRunning={isRunning}
                         provider={selectedProvider}
                         geminiThinking={geminiThinking}
                         onCycleThinking={cycleGeminiThinking}
+                        chatgptThink={chatgptThink}
+                        onToggleChatgptThink={() => setChatgptThink(!chatgptThink)}
                         onToggleDeepThink={() => {
                           setIsDeepThink(!isDeepThink);
                           sendAction('set_deep_think', { enabled: !isDeepThink });
                         }}
                         onSend={(text, attachments) => sendPrompt(text, autoApplyPatch, [], ignoredPatterns, attachments, null, !requireCommandApproval)}
                         onStop={() => sendAction('stop_task')}
-                        onOpenFolder={() => sendAction('choose_folder')}
+                        onOpenFolder={handleOpenFolder}
                         onShowBrowser={() => sendAction('show_provider_browser', { provider: selectedProvider })}
                         onHideBrowser={() => sendAction('hide_provider_browser', { provider: selectedProvider })}
                       />
@@ -377,6 +414,14 @@ isRunning={isRunning}
         }}
       />
       <AppDialogHost />
+      <ImageViewerHost />
+      <FolderPickerModal
+        open={folderPickerOpen}
+        notice={folderPickerNotice}
+        onClose={() => setFolderPickerOpen(false)}
+        onPick={(p) => { setFolderPickerOpen(false); openWorkspace(p); }}
+        browseDir={browseDir}
+      />
     </div>
     </UpdateGate>
   );

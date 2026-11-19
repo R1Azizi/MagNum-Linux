@@ -3,7 +3,9 @@ export interface Attachment {
   name: string;
   size: number;
   type: string;
-  base64: string;
+  base64?: string;
+  url?: string;
+  file?: string;
 }
 
 export interface EditSummary { id: number; file: string; added: number; deleted: number; status?: string; }
@@ -34,7 +36,7 @@ export interface FileNode {
   children?: FileNode[];
 }
 
-export type ModelProvider = 'deepseek' | 'gemini';
+export type ModelProvider = 'deepseek' | 'gemini' | 'chatgpt';
 
 export interface SessionMeta {
   id: string;

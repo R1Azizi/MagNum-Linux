@@ -6,11 +6,15 @@ const SYSTEM_PROMPT = `# MAGNUM — FAST AUTONOMOUS SOFTWARE ENGINEER
 
 You are MAGNUM, an execution-oriented, ultra-fast autonomous software engineer.
 You interact directly with the local codebase and ${OS.os} system using structured JSON commands.
+STRICT OUTPUT RULE (APPLIES TO EVERY TURN, INCLUDING GREETINGS):
+- Reply with ONLY ONE \`\`\`json code block. No text outside the block.
+- For greetings or questions that require no workspace inspection or tool use, reply immediately with "finish" JSON.
+- MagNum's local runner on the user's PC executes your JSON actions on the workspace and sends back "TOOL RESULT:" in the next message. NEVER ask the user to upload or paste files — request them with "read_files" JSON instead.
 
-You MUST reply with a SINGLE markdown code block containing your JSON decision:
+JSON FORMAT:
 \`\`\`json
 {
-  "thought": "Short reasoning (max 2 sentences)",
+  "thought": "Brief action purpose in English. No chain-of-thought.",
   "action": "ACTION_NAME",
   "params": { ... }
 }
@@ -85,9 +89,6 @@ function unescapeJsonString(str) {
     .replace(/\\\\/g, '\\');
 }
 
-
-
-
 function fixRawNewlinesInJsonStrings(json) {
   let out = '';
   let inString = false;
@@ -96,7 +97,6 @@ function fixRawNewlinesInJsonStrings(json) {
     const ch = json[i];
     if (inString) {
       if (escaped) {
-        
         if (!'ntrfbu"\\/'.includes(ch)) {
           out += '\\' + ch;
         } else {
@@ -119,20 +119,15 @@ function fixRawNewlinesInJsonStrings(json) {
   return out;
 }
 
-
 function extractCleanThoughtForUI(text) {
   if (!text || typeof text !== 'string') return '';
-  
-  
   const clean = text.replace(/^(?:json|Copy|Download)\s*/gim, '').trim();
 
-  
   const thoughtMatch = clean.match(/"thought"\s*:\s*"((?:\\.|[^"\\])*)/);
   if (thoughtMatch) {
     return unescapeJsonString(thoughtMatch[1]);
   }
 
-  
   const beforeJson = clean.split('```')[0].trim();
   if (beforeJson && !beforeJson.startsWith('{')) {
     return beforeJson;
@@ -140,7 +135,6 @@ function extractCleanThoughtForUI(text) {
 
   return 'Planning codebase actions...';
 }
-
 
 function unescapePartial(s) {
   try {
@@ -157,23 +151,18 @@ function extractSafeLiveStream(text) {
 
   const clean = text.replace(/^(?:json|Copy|Download|CopyDownload|CopyCode)\s*/gim, '').trim();
 
-  
   const thoughtMatch = clean.match(/"thought"\s*:\s*"((?:\\.|[^"\\])*)/);
   let liveThought = '';
   if (thoughtMatch) {
     liveThought = unescapePartial(thoughtMatch[1]);
   }
 
-  
   const hasJsonBlock = clean.includes('```json') || clean.includes('```') || clean.startsWith('{') || clean.includes('"action"');
 
   let prose = '';
-  
-  
   if (!hasJsonBlock) {
     prose = clean;
   } else {
-    
     const beforeBlock = clean.split('```')[0].trim();
     if (beforeBlock && !beforeBlock.startsWith('{') && !beforeBlock.includes('"action"')) {
       prose = beforeBlock;
@@ -188,37 +177,32 @@ function extractSafeLiveStream(text) {
 
 const MODE_PROMPTS = {
   plan: `
-=== ACTIVE MODE: PLAN (read-only planning, like Cursor Plan mode) ===
-1. You MUST NOT use "patch_file", "create_file", or "execute_command" in this mode.
+=== ACTIVE MODE: PLAN (read-only planning) ===
+1. Do NOT use "patch_file", "create_file", or "execute_command".
 2. Only investigate with "read_files" and "search_code".
-3. Then use "finish" with a structured implementation plan in "summary":
-   - Goal
-   - Numbered step-by-step actions
-   - Exact files to modify/create
-   - Risks & edge cases
-   - Verification steps (commands/tests to run later)`,
+3. Call "finish" with a structured plan in "summary" (Goal, steps, exact files, risks, verification).`,
   debug: `
-=== ACTIVE MODE: DEBUG (systematic root-cause debugging, like Cursor Debug mode) ===
-Follow this STRICT loop:
-1. REPRODUCE: run the failing command/test with "execute_command" to see the real error.
-2. EVIDENCE: "search_code" the error string / involved symbols, then "read_files" on suspects. Never guess.
-3. HYPOTHESIZE: state ONE concrete root-cause hypothesis in "thought".
-4. VERIFY: confirm it with evidence (code paths, temporary logs, tests).
-5. FIX: apply the MINIMAL targeted "patch_file" that fixes the root cause, not symptoms.
-6. CONFIRM: re-run the failing command/test with "execute_command" to prove the fix, then "finish" with root cause + fix summary.`,
+=== ACTIVE MODE: DEBUG (root-cause debugging) ===
+1. Reproduce with "execute_command" or inspect error via "search_code" and "read_files".
+2. State the root-cause hypothesis in "thought" and verify it with evidence.
+3. Apply the minimal "patch_file", re-run verification, then call "finish".`,
   ask: `
-=== ACTIVE MODE: ASK (read-only Q&A, like Cursor Ask mode) ===
-1. You MUST NOT modify anything: no "patch_file", no "create_file".
-2. Investigate with "read_files" / "search_code" only.
-3. Answer clearly with references to exact files and line numbers.
-4. Use "finish" with the full answer in "summary".`,
+=== ACTIVE MODE: ASK (read-only Q&A) ===
+1. Do NOT use "patch_file" or "create_file".
+2. Investigate with "read_files" / "search_code" only, then call "finish" with exact file/line references.`,
   multitask: `
-=== ACTIVE MODE: MULTITASK (structured multi-subtask execution) ===
-1. First turn: decompose the request into numbered independent subtasks in "thought".
-2. Execute subtasks one by one; keep each subtask's patches in its own batch.
-3. State progress briefly in "thought" after each subtask.
-4. At the end run a final verification with "execute_command" and "finish" with a per-subtask status report.`
+=== ACTIVE MODE: MULTITASK ===
+1. Break the task into numbered subtasks in "thought".
+2. Execute step by step, verify with "execute_command", then call "finish" with status per subtask.`
 };
+
+const FINISH_FORMAT_RULE = `
+When calling "finish", "summary" must be plain Markdown only (no HTML tags like <PRIVATE_NOTE>, <badge>, <details>, <summary>).`;
+
+for (const __modeKey of Object.keys(MODE_PROMPTS)) {
+  MODE_PROMPTS[__modeKey] += FINISH_FORMAT_RULE;
+}
+SYSTEM_PROMPT += FINISH_FORMAT_RULE;
 
 const AGENT_STRINGS = {
   en: {
@@ -226,6 +210,7 @@ const AGENT_STRINGS = {
     fullFile: 'full file',
     linesRange: (a, b) => `lines ${a}–${b}`,
     lineLabel: (n) => `line ${n}`,
+    moreAvailable: '⏳ More lines available — get the next 1000-line window with continue_reading',
     searchLabel: 'Searched for:',
     results: (n) => `(${n} result${n === 1 ? '' : 's'})`,
     noMatch: 'No matches found.',
@@ -233,6 +218,7 @@ const AGENT_STRINGS = {
     patchOk: 'patch applied successfully.',
     patchErr: (m) => `error - ${m}`,
     rejected: (f) => `Changes to \`${f}\` were rejected by the user.`,
+    rateLimitChatGpt: '**ChatGPT usage limit reached.** Your free-plan quota for this window is exhausted.\n• Wait for the limit to reset, or\n• Switch to DeepSeek / Gemini from the model pill and re-send this prompt.\nThe task was stopped safely; nothing was lost.\n• MagNum blocks new ChatGPT requests during an automatic cooldown window.',
     rateLimitGemini: '**Gemini rate limit reached (daily quota).** AI Studio replied: "You\'ve reached your rate limit." This Google account\'s quota for today is exhausted.\n• Wait until the quota resets (usually next day), or\n• Switch to DeepSeek from the model pill and re-send this prompt.\nThe task was stopped safely; nothing was lost.\n• MagNum now blocks new Gemini requests during an automatic cooldown window to protect the account.'
   },
   fa: {
@@ -240,6 +226,7 @@ const AGENT_STRINGS = {
     fullFile: 'کل فایل',
     linesRange: (a, b) => `خطوط ${a} تا ${b}`,
     lineLabel: (n) => `خط ${n}`,
+    moreAvailable: '⏳ خطوط بیشتری باقی است — پنجرهٔ ۱۰۰۰ خط بعدی را با continue_reading بگیر',
     searchLabel: 'جستجو برای:',
     results: (n) => `(${n} نتیجه)`,
     noMatch: 'موردی یافت نشد.',
@@ -247,12 +234,13 @@ const AGENT_STRINGS = {
     patchOk: 'پچ با موفقیت اعمال شد.',
     patchErr: (m) => `خطا - ${m}`,
     rejected: (f) => `تغییرات فایل \`${f}\` توسط کاربر لغو شد.`,
+    rateLimitChatGpt: '**به سقف مصرف ChatGPT رسیدیم.** سهمیهٔ پلن رایگان در این بازه تمام شده است.\n• تا ریست شدن محدودیت صبر کنید، یا\n• از پیل مدل به DeepSeek / Gemini سوییچ کنید و همین پرامپت را دوباره بفرستید.\nتسک به‌صورت امن متوقف شد؛ هیچ تغییری از دست نرفته است.\n• مگنوم تا پایان پنجرهٔ خنک‌سازی هیچ درخواست جدیدی به ChatGPT نمی‌فرستد.',
     rateLimitGemini: '**به سقف مصرف روزانهٔ جمنای رسیدیم.** پاسخ AI Studio: «You\'ve reached your rate limit». سهمیهٔ امروز این حساب گوگل تمام شده است.\n• تا شارژ مجدد سهمیه (معمولاً روز بعد) صبر کنید، یا\n• از پیل مدل به دیپ‌سیک سوییچ کنید و همین پرامپت را دوباره بفرستید.\nتسک به‌صورت امن متوقف شد؛ هیچ تغییری از دست نرفته است.\n• مگنوم تا پایان پنجرهٔ خنک‌سازی به‌صورت خودکار هیچ درخواست جدیدی به جمنای نمی‌فرستد.'
   }
 };
 
-
 const RATE_LIMIT_TEXT_RE = /reached your rate limit|please try again later|reached your quota|quota for the day|wait for it to reset|upgrade to go further|too many requests|resource.{0,12}exhausted|HTTP\s*429|status[^0-9\n]{0,10}429/i;
+
 
 function looksLikeRateLimit(text) {
   if (typeof text !== 'string') return false;
@@ -261,7 +249,30 @@ function looksLikeRateLimit(text) {
   if (/"action"\s*:/.test(prose)) return false;
   if (prose.trim().length > 600) return false;
   return RATE_LIMIT_TEXT_RE.test(prose);
+
 }
+
+const CHANGE_REQUEST_RE = /```|patch_file|create_file|"search"\s*:|"replace"\s*:|\b(implement|apply|fix|add|remove|delete|refactor|rename|create|patch|replace|insert|update|change|build|install)\b|فایل|پچ|اعمال|حذف|اضافه|جایگزین|درست\s*کن|بساز|پیاده/i;
+const FILE_PATH_RE = /\.(tsx|jsx|ts|js|rs|py|css|html|json|md|txt)\b/i;
+
+function detectChangeRequest(task, skill) {
+  if (skill === 'ask' || skill === 'plan') return false;
+  const t = String(task || '');
+  if (!t.trim()) return false;
+  return CHANGE_REQUEST_RE.test(t) || FILE_PATH_RE.test(t);
+}
+
+function taskReminderBlock(task) {
+  const t = String(task || '').trim();
+  if (!t) return '';
+  const MAX = 6000;
+  const body = t.length > MAX
+    ? t.slice(0, Math.floor(MAX * 0.6)) + '\n…[middle truncated]…\n' + t.slice(-Math.floor(MAX * 0.4))
+    : t;
+  return `\n=== ACTIVE USER TASK (do NOT call "finish" until completed) ===\n${body}\n=== END TASK ===\n`;
+}
+
+const CONFUSED_FINISH_RE = /not (yet )?(been )?(specified|provided|given)|no (task|change|request)|ask for|clarif|please (provide|specify|share|upload)|what (would|do) you|i (cannot|can't) (access|edit|modify)|upload|بارگذاری|مشخص نشده|درخواستی مشخص|لطفاً.*(بگویید|مشخص کنید|بارگذاری)/i;
 
 class CodingAgent {
   constructor(driver, tools, onEvent = null, browser = null) {
@@ -271,12 +282,18 @@ class CodingAgent {
     this.browser = browser;
     this.isStopped = false;
     this.pendingChunks = [];
-    this.patchResolver = null; 
+    this.readResume = null;
+    this.patchResolver = null;
     this.commandResolver = null;
     this._systemPromptSent = false;
+    this.activeTask = '';
+    this.taskIsChange = false;
+    this.turnsExecuted = 0;
+    this.readsDelivered = 0;
+    this.mutationsApplied = 0;
+    this.prematureFinishRetries = 0;
   }
 
-  
   resolvePendingPatch(approved = true) {
     if (typeof this.patchResolver === 'function') {
       this.patchResolver(approved);
@@ -332,13 +349,12 @@ class CodingAgent {
   }
 
   calculateReadingPacing() {
-    return Math.floor(Math.random() * 600) + 1000; 
+    return Math.floor(Math.random() * 600) + 1000;
   }
 
   parseResponse(text) {
     if (!text || typeof text !== 'string') return null;
 
-    
     const cleanText = text
       .replace(/<think>[\s\S]*?<\/think>/g, '')
       .replace(/^(?:json|Copy|Download)\s*/gim, '')
@@ -346,11 +362,18 @@ class CodingAgent {
 
     let jsonString = '';
     const allBlocks = [...cleanText.matchAll(/```(?:json)?\s*([\s\S]*?)\s*```/gi)];
-    const blockMatch = allBlocks.length ? allBlocks[allBlocks.length - 1] : null;
+    let blockMatch = null;
+    for (let i = allBlocks.length - 1; i >= 0; i--) {
+      if (/"action"\s*:/.test(allBlocks[i][1])) {
+        blockMatch = allBlocks[i];
+        break;
+      }
+    }
+    if (!blockMatch && allBlocks.length) blockMatch = allBlocks[allBlocks.length - 1];
+
     if (blockMatch) {
       jsonString = blockMatch[1].trim();
     } else if (cleanText.trim().startsWith('{')) {
-      
       const trimmed = cleanText.trim();
       let depth = 0, inStr = false, esc = false, end = -1;
       for (let i = 0; i < trimmed.length; i++) {
@@ -397,12 +420,11 @@ class CodingAgent {
 
     try {
       return JSON.parse(jsonString);
-    } catch (firstErr) {
+    } catch {
       try {
-        
-        let repaired = fixRawNewlinesInJsonStrings(jsonString).replace(/,\s*([}\]])/g, '$1');
+        const repaired = fixRawNewlinesInJsonStrings(jsonString).replace(/,\s*([}\]])/g, '$1');
         return JSON.parse(repaired);
-      } catch (secondErr) {
+      } catch {
         return this.fallbackExtractAction(cleanText);
       }
     }
@@ -426,7 +448,6 @@ class CodingAgent {
     }
 
     if (action === 'execute_command') {
-      
       const cmdMatch = text.match(/"command"\s*:\s*"((?:\\.|[^"\\])*)"/) ||
                        text.match(/"cmd"\s*:\s*"((?:\\.|[^"\\])*)"/);
       const command = cmdMatch ? unescapeJsonString(cmdMatch[1]) : '';
@@ -458,9 +479,14 @@ class CodingAgent {
         });
       }
       const seenPatch = new Set();
-      const uniquePatches = patches.filter(p => { const k = p.file + '||' + p.search + '||' + p.replace; if (seenPatch.has(k)) return false; seenPatch.add(k); return true; });
+      const uniquePatches = patches.filter(p => {
+        const k = p.file + '||' + p.search + '||' + p.replace;
+        if (seenPatch.has(k)) return false;
+        seenPatch.add(k);
+        return true;
+      });
       if (uniquePatches.length > 0) return { thought, action: 'patch_file', params: { patches: uniquePatches } };
-      return null; 
+      return null;
     }
 
     return { thought, action, params: {} };
@@ -469,10 +495,30 @@ class CodingAgent {
   async run(task, options = {}) {
     this.isStopped = false;
     this.pendingChunks = [];
+    this.readResume = null;
     const L = AGENT_STRINGS[options.lang === 'fa' ? 'fa' : 'en'] || AGENT_STRINGS.en;
-    const P = options.provider === 'gemini' ? 'Gemini' : 'DeepSeek';
+    const P = options.provider === 'gemini' ? 'Gemini' : options.provider === 'chatgpt' ? 'ChatGPT' : 'DeepSeek';
+    this.activeTask = String(task || '');
+    this.taskIsChange = detectChangeRequest(this.activeTask, options.skill);
+    this.turnsExecuted = 0;
+    this.readsDelivered = 0;
+    this.mutationsApplied = 0;
+    this.prematureFinishRetries = 0;
+
+    const windowSummary = (chunk) => {
+      const rows = (chunk.segments || []).map(s => s.error
+        ? `• \`${s.path}\` (❌ ${s.error})`
+        : s.isComplete
+          ? `• \`${s.path}\` (${L.fullFile} — ${s.totalFileLines})`
+          : `• \`${s.path}\` (${L.linesRange(s.startLine, s.endLine)} / ${s.totalFileLines})`
+      );
+      if (chunk.hasMore) rows.push(L.moreAvailable);
+      return rows.join('\n');
+    };
+
     let lastReadSignature = null;
-let lastListSignature = null; // اضافه شد
+    let lastSearchSignature = null;
+    let lastListSignature = null;
     let consecutiveFormatRetries = 0;
 
     const isFirstMessage = (options.isFirstMessage !== undefined)
@@ -482,11 +528,14 @@ let lastListSignature = null; // اضافه شد
       ? Boolean(options.systemPromptSent)
       : this._systemPromptSent;
 
-    if (typeof options.deepThink === 'boolean' && options.provider !== 'gemini' && this.driver?.setDeepThink) {
+    if (typeof options.deepThink === 'boolean' && options.provider === 'deepseek' && this.driver?.setDeepThink) {
       await this.driver.setDeepThink(options.deepThink);
     }
     if (options.provider === 'gemini' && typeof options.thinkingLevel === 'string' && this.driver?.setThinkingLevel) {
       await this.driver.setThinkingLevel(options.thinkingLevel);
+    }
+    if (options.provider === 'chatgpt' && this.driver?.setThinkEnabled) {
+      await this.driver.setThinkEnabled(typeof options.chatgptThink === 'boolean' ? options.chatgptThink : true);
     }
 
     const modeInstructions = options.skill && MODE_PROMPTS[options.skill] ? MODE_PROMPTS[options.skill] : '';
@@ -495,49 +544,37 @@ let lastListSignature = null; // اضافه شد
     const sendingFullPrompt = isFirstMessage || !systemPromptAlreadySent;
 
     if (sendingFullPrompt) {
-      
       const projectTree = (typeof options.projectTree === 'string')
         ? options.projectTree
         : await this.tools.getProjectTree();
-      console.log(`\n🔍 Scanning workspace tree...`);
+      console.log('\n🔍 Scanning workspace tree...');
       this.emit('agent_status', { text: 'Scanning workspace tree...' });
       if (this.isStopped) return;
 
-      const providerSpecificNote = options.provider === 'gemini'
-        ? `
-⚠️ OUTPUT FORMAT (CRITICAL — GEMINI/AI STUDIO):
-Your ENTIRE response must be a SINGLE \`\`\`json code block. Start immediately with \`\`\`json and end with \`\`\`. No preamble, no prose, no <pre>, no raw text outside the block.`
-        : '';
-      initialMessage = `${SYSTEM_PROMPT}${providerSpecificNote}
-${modeInstructions}
+      initialMessage = `${SYSTEM_PROMPT}${modeInstructions}
 
 === PROJECT FILE TREE ===
 ${projectTree}
 ========================
-
 USER TASK:
 ${task}
-`;
-      console.log(`📤 Sending FULL system prompt + task to ${P}...`);
+
+Respond ONLY with ONE \`\`\`json block (use "read_files" / "search_code" for project files, or "finish" directly for greetings/general replies). Do not ask the user to upload files.`;
+
+      console.log(`📤 Sending system prompt + task to ${P}...`);
       this.emit('agent_status', { text: `Sending system prompt & task to ${P}...` });
     } else {
-      
       const treeSection = (typeof options.treeUpdate === 'string' && options.treeUpdate)
-        ? `\n=== WORKSPACE STRUCTURE UPDATED (files/folders added or removed since your last turn) ===\n${options.treeUpdate}\n========================\n`
+        ? `\n=== UPDATED WORKSPACE TREE ===\n${options.treeUpdate}\n========================\n`
         : '';
       if (treeSection) {
         console.log('🌲 Workspace structure changed since last turn — sending updated file tree...');
         this.emit('agent_status', { text: 'Workspace changed — refreshing project tree...' });
       }
-      const providerFollowUpNote = options.provider === 'gemini'
-        ? `\
-⚠️ GEMINI FORMAT: reply with ONE \`\`\`json block only — nothing before or after it.`
-        : '';
-      initialMessage = `${modeInstructions}NEW USER TASK (continuing in this existing chat session):
+      initialMessage = `${modeInstructions}NEW USER TASK:
 ${task}
 ${treeSection}
-Remember: Follow the MAGNUM system instructions you already received.
-Reply ONLY with a single JSON action block.${providerFollowUpNote}`;
+Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you need project files, or "finish" directly for greetings/general replies).`;
       console.log('📤 Sending FOLLOW-UP task only (system prompt already in context)...');
       this.emit('agent_status', { text: `Sending follow-up task to ${P}...` });
     }
@@ -549,7 +586,6 @@ Reply ONLY with a single JSON action block.${providerFollowUpNote}`;
     await this.driver.sendMessage(initialMessage, options);
     if (sendingFullPrompt) this._systemPromptSent = true;
 
-    
     const liveUrl = await this.driver.getChatUrl();
     if (liveUrl && liveUrl.includes('/chat/')) {
       this.emit('chat_url_captured', { url: liveUrl });
@@ -565,8 +601,6 @@ Reply ONLY with a single JSON action block.${providerFollowUpNote}`;
 
       this.emit('agent_status', { text: `${P} is thinking...` });
 
-      
-      let lastStreamSignature = '';
       let response;
       let rateLimitAttempts = 0;
       const MAX_RATE_LIMIT_RETRIES = 3;
@@ -575,41 +609,45 @@ Reply ONLY with a single JSON action block.${providerFollowUpNote}`;
         if (this.isStopped) break;
         try {
           response = await this.driver.waitForCompletion(
-            null, 
+            (progress) => {
+              if (this.isStopped) return;
+              const live = extractSafeLiveStream(progress && progress.text ? progress.text : '');
+              this.emit('agent_streaming', { text: live.prose, thought: live.thought, action: null });
+            },
             (statusText) => {
               if (this.isStopped) return;
               this.emit('agent_status', { text: statusText });
-            },
-            (attempt, max) => {
-              if (this.isStopped) return;
-              this.emit('network_retry', { attempt, max, text: `Network error — retrying (${attempt}/${max})...` });
             }
           );
-          break; 
+          break;
         } catch (waitErr) {
-          
-          if (waitErr.code === 'CAPTCHA_REQUIRED') {
-            if (waitErr.code === 'NO_NEW_RESPONSE' || (waitErr.message && waitErr.message.includes('NO_NEW_RESPONSE'))) {
+          if (waitErr.code === 'NO_NEW_RESPONSE' || (waitErr.message && waitErr.message.includes('NO_NEW_RESPONSE'))) {
             console.warn('⚠️ Stale-answer protection: no new model response detected — stopping safely.');
             noNewStop = true;
             break;
           }
-          throw waitErr;
+          if (waitErr.code === 'CAPTCHA_REQUIRED') {
+            throw waitErr;
           }
-
           if (waitErr.code === 'GEMINI_RATE_LIMIT' || (waitErr.message && waitErr.message.includes('GEMINI_RATE_LIMIT'))) {
             console.warn('⚠️ Gemini rate limit / quota reached — stopping task with a clear notice.');
             rateLimitStop = true;
-            break; 
+            break;
           }
-
+          if (waitErr.code === 'CHATGPT_RATE_LIMIT' || (waitErr.message && waitErr.message.includes('CHATGPT_RATE_LIMIT'))) {
+            console.warn('⚠️ ChatGPT usage/rate limit reached — stopping task with a clear notice.');
+            rateLimitStop = true;
+            break;
+          }
+          if (waitErr.code === 'CHATGPT_LOGIN_REQUIRED' || (waitErr.message && waitErr.message.includes('CHATGPT_LOGIN_REQUIRED'))) {
+            throw waitErr;
+          }
           if (waitErr.code === 'LENGTH_LIMIT_REACHED' || (waitErr.message && waitErr.message.includes('LENGTH_LIMIT_REACHED'))) {
             if (rateLimitAttempts >= MAX_RATE_LIMIT_RETRIES) {
               throw new Error('DeepSeek rate limit persisted after multiple retries.');
             }
             rateLimitAttempts++;
 
-            
             const cooldownSec = Math.floor(Math.random() * (105 - 65 + 1)) + 65;
             console.log(`⏳ [Rate Limit Pause] DeepSeek throttled. Pausing for ${cooldownSec}s...`);
 
@@ -625,11 +663,10 @@ Reply ONLY with a single JSON action block.${providerFollowUpNote}`;
 
             if (this.isStopped) return;
 
-            
             console.log('🔄 Rate limit cleared. Re-sending the current turn message to DeepSeek...');
             this.emit('agent_status', { text: 'Rate limit cleared. Re-sending payload to DeepSeek...' });
             await this.driver.sendMessage(lastSentMessage);
-            continue; 
+            continue;
           }
           throw waitErr;
         }
@@ -643,50 +680,31 @@ Reply ONLY with a single JSON action block.${providerFollowUpNote}`;
       }
 
       if (rateLimitStop) {
-        this.emit('gemini_rate_limit', { provider: 'gemini' });
-        const msg = L.rateLimitGemini;
-        this.emit('agent_status', { text: 'Gemini rate limit reached — waiting for quota reset or provider switch.' });
+        const rlProvider = options.provider === 'chatgpt' ? 'chatgpt' : 'gemini';
+        this.emit('provider_rate_limit', { provider: rlProvider });
+        if (rlProvider === 'gemini') this.emit('gemini_rate_limit', { provider: 'gemini' });
+        const msg = rlProvider === 'chatgpt' ? L.rateLimitChatGpt : L.rateLimitGemini;
+        this.emit('agent_status', { text: `${P} rate limit reached — waiting for quota reset or provider switch.` });
         this.emit('agent_message', { role: 'agent', text: msg, thought: '', action: 'finish' });
         this.emit('task_finished', { summary: msg });
         taskFinished = true;
-        break; 
+        break;
       }
       if (this.isStopped) break;
 
-      
-      
-        if (noNewStop) {
-          const msg = options.lang === 'fa'
-            ? '**پاسخ جدیدی از مدل دریافت نشد.** محافظ ضد پاسخ قدیمی جلوی نمایش جواب اشتباه (متعلق به تسک قبلی) را گرفت؛ هیچ تغییری اعمال نشد. لطفاً پرامپت را دوباره بفرستید.'
-            : '**No new model response was detected for this turn.** The stale-answer protection blocked a wrong (previous-turn) answer; no changes were made. Please re-send your prompt.';
-          this.emit('agent_status', { text: 'No new response detected — task stopped safely.' });
-          this.emit('agent_message', { role: 'agent', text: msg, thought: '', action: 'finish' });
-          this.emit('task_finished', { summary: msg });
-          taskFinished = true;
-          break;
-        }
+
+      if (noNewStop) {
+        const msg = options.lang === 'fa'
+          ? '**پاسخ جدیدی از مدل دریافت نشد.** محافظ ضد پاسخ قدیمی جلوی نمایش جواب اشتباه (متعلق به تسک قبلی) را گرفت؛ هیچ تغییری اعمال نشد. لطفاً پرامپت را دوباره بفرستید.'
+          : '**No new model response was detected for this turn.** The stale-answer protection blocked a wrong (previous-turn) answer; no changes were made. Please re-send your prompt.';
+        this.emit('agent_status', { text: 'No new response detected — task stopped safely.' });
+        this.emit('agent_message', { role: 'agent', text: msg, thought: '', action: 'finish' });
+        this.emit('task_finished', { summary: msg });
+        taskFinished = true;
+        break;
+      }
 
       const decision = this.parseResponse(response);
-
-      if (this.pendingChunks.length > 0) {
-        const nextChunk = this.pendingChunks.shift();
-        const fullThought = decision?.thought || 'Receiving next file chunk...';
-
-        this.emit('agent_message', {
-          role: 'agent',
-          text: `Delivering files: Batch ${nextChunk.batchIndex} of ${nextChunk.totalBatches} (${nextChunk.chunkLinesCount} lines)`,
-          thought: fullThought,
-          action: 'continue_reading'
-        });
-
-        await this.randomDelay(800, 1500, 'Chunk Delivery');
-        if (this.isStopped) break;
-
-        this.emit('agent_status', { text: `Sending Batch ${nextChunk.batchIndex}/${nextChunk.totalBatches} to ${P}...` });
-        lastSentMessage = nextChunk.formattedMessage;
-        await this.driver.sendMessage(nextChunk.formattedMessage);
-        continue;
-      }
 
       if (!decision || !decision.action) {
         consecutiveFormatRetries++;
@@ -699,24 +717,53 @@ Reply ONLY with a single JSON action block.${providerFollowUpNote}`;
           taskFinished = true;
           break;
         }
-        console.log('⚠️ Response is not JSON action. Model output was:\n', response.slice(-300));
+        console.log('⚠️ Response is not JSON action. Model output was:\n', String(response || '').slice(-300));
         await this.randomDelay(2000, 3500, 'Format Retry');
         if (this.isStopped) break;
 
-        const formatRetryMsg = 'Please proceed with your next codebase action inside a ```json ``` block (e.g. "read_files", "search_code", "patch_file", or "finish").';
+        const formatRetryMsg =
+          `Your last reply was plain text instead of a \`\`\`json block.\n` +
+          `Do NOT ask the user to upload files — MagNum runs your JSON locally.\n` +
+          `Output ONLY ONE \`\`\`json block:\n` +
+          (this.taskIsChange
+            ? `\`\`\`json\n{"thought": "Inspect target file", "action": "read_files", "params": {"files": ["path/to/file"]}}\n\`\`\`\n` + taskReminderBlock(this.activeTask)
+            : `\`\`\`json\n{"thought": "Answer user", "action": "finish", "params": {"summary": "Your answer here"}}\n\`\`\``);
+
         lastSentMessage = formatRetryMsg;
-        await this.driver.sendMessage(formatRetryMsg);
+        await this.driver.sendMessage(formatRetryMsg, { provider: options.provider });
         continue;
       }
 
+      consecutiveFormatRetries = 0;
+
       const fullThought = decision.thought || '';
+      this.turnsExecuted++;
       console.log(`\n💭 Thought: ${fullThought || 'Processing...'}`);
       console.log(`⚡ Action: [${decision.action}]`);
 
       if (decision.action === 'finish') {
-        const summary = decision.params?.summary || decision.params?.answer || decision.params?.message || 'Completed successfully.';
+        const rawSummary = decision.params?.summary || decision.params?.answer || decision.params?.message || '';
+        const noSummary = !String(rawSummary).trim();
+        const confused = CONFUSED_FINISH_RE.test(String(rawSummary)) || CONFUSED_FINISH_RE.test(fullThought);
+        const premature = this.taskIsChange && this.mutationsApplied === 0 &&
+          (noSummary || confused || this.turnsExecuted <= 2) && this.prematureFinishRetries < 2;
+        if (premature) {
+          this.prematureFinishRetries++;
+          console.warn(`🛑 finish rejected (${this.prematureFinishRetries}/2): change task, zero edits, noSummary=${noSummary}, confused=${confused}.`);
+          this.emit('agent_status', { text: 'finish rejected — asking model for next JSON action...' });
+          const corrective =
+            `Your "finish" was rejected because this is a code-change task and 0 edits have been applied${noSummary ? ' (summary was empty)' : ''}.\n` +
+            `Do NOT ask the user to upload files or clarify. Reply ONLY with the next \`\`\`json action ("read_files", "search_code", "patch_file", or "create_file").` +
+            taskReminderBlock(this.activeTask);
+          await this.randomDelay(1500, 2500, 'Contract Enforcement');
+          if (this.isStopped) break;
+          lastSentMessage = corrective;
+          await this.driver.sendMessage(corrective, { provider: options.provider });
+          continue;
+        }
+        const summary = String(rawSummary).replace(/<\/?(?:PRIVATE_NOTE|badge|details|summary)[^>]*>/gi, '').trim() || 'Completed successfully.';
         console.log('\n🎉 Task Finished!');
-        
+
         this.emit('agent_streaming_end', {});
         this.emit('agent_message', {
           role: 'agent',
@@ -734,16 +781,12 @@ Reply ONLY with a single JSON action block.${providerFollowUpNote}`;
       if (decision.action === 'read_files' || decision.action === 'read_file') {
         let files = [];
         let ranges = {};
-
         if (decision.action === 'read_file') {
           const singleFile = decision.params?.file;
           if (singleFile) {
             files = [singleFile];
             if (decision.params.start_line || decision.params.end_line) {
-              ranges[singleFile] = {
-                start_line: decision.params.start_line,
-                end_line: decision.params.end_line
-              };
+              ranges[singleFile] = { start_line: decision.params.start_line, end_line: decision.params.end_line };
             }
           }
         } else {
@@ -756,97 +799,79 @@ Reply ONLY with a single JSON action block.${providerFollowUpNote}`;
           return `${f}:${r ? `${r.start_line || 1}-${r.end_line || 'end'}` : 'FULL'}`;
         }).sort().join('|');
 
-        if (currentSignature === lastReadSignature) {
+        const isRepeat = currentSignature === lastReadSignature;
+        const hasResume = Array.isArray(this.readResume) && this.readResume.length > 0;
+
+        if (isRepeat && !hasResume) {
           loopRepeatCount++;
-          console.log(`🛑 Loop detected (${loopRepeatCount}x): same file & range re-requested.`);
+          console.log(`🛑 Loop detected (${loopRepeatCount}x): same window re-requested, nothing left to deliver.`);
           toolFeedback = loopRepeatCount >= 2
-            ? `⚠️ HARD STOP: You requested the EXACT same files/ranges ${loopRepeatCount} times in a row. Their content is ALREADY in your context above. Further identical read_files will be IGNORED.
-- If you located the issue: reply with "patch_file" NOW.
-- If you need a symbol location: reply with "search_code" NOW.
-- If you have enough context: reply with "finish" NOW.`
-            : `⚠️ NOTICE: You just received these exact files and line ranges in the immediately preceding turn.
-Their full content is already displayed right above in your conversation history.
-- Do NOT re-read the exact same lines.
-- If you need another part of the file (e.g. lines 5001+), specify "start_line" and "end_line".
-- If you found the issue, proceed immediately with "patch_file".
-- If you need to locate a specific function, use "search_code".`;
+            ? `⚠️ HARD STOP: You requested the EXACT same files/ranges ${loopRepeatCount} times and ALL of that content was already delivered. Further identical reads will be IGNORED.\n- If you located the issue: reply with "patch_file" NOW.\n- If you need a symbol location: reply with "search_code" NOW.\n- If you have enough context: reply with "finish" NOW.`
+            : `⚠️ NOTICE: These exact files/ranges were already fully delivered in the previous window.\n- Do NOT re-read delivered lines.\n- If more lines remain, use "continue_reading" for the next 1000-line window.\n- Otherwise proceed with "patch_file", "search_code", or "finish".`;
         } else {
           loopRepeatCount = 0;
+          let effFiles = files;
+          let effRanges = ranges;
+          if (isRepeat && hasResume) {
+            effFiles = this.readResume.map(r => r.path);
+            effRanges = {};
+            for (const r of this.readResume) {
+              if (r.startLine >= 1) effRanges[r.path] = { start_line: r.startLine, end_line: r.endLine };
+            }
+          }
           lastReadSignature = currentSignature;
-           console.log(`📖 Reading ${files.length} file(s):`, files.join(', '));
-           const fileRangeDesc = files.map(f => {
-             const r = ranges[f];
-             return r ? `${f} (lines ${r.start_line || 1}-${r.end_line || 'end'})` : `${f} (full)`;
-           }).join(', ');
-           this.emit('agent_status', { text: `Reading: ${fileRangeDesc}` });
-
-           const chunks = await this.tools.prepareFileChunks(files, ranges, 2000, (filePath, range) => {
-             const rText = range && (range.start_line || range.end_line)
-               ? ` (lines ${range.start_line || 1}-${range.end_line || 'end'})`
-               : ' (full file)';
-             this.emit('agent_status', { text: `Reading file: ${filePath}${rText}` });
-           });
-
-
-             const linesSummary = files.map(f => {
-               const r = ranges[f];
-               return r && (r.start_line || r.end_line) 
-                 ? `• \`${f}\` (${L.linesRange(r.start_line || 1, r.end_line || '∞')})` 
-                 : `• \`${f}\` (${L.fullFile})`;
-             }).join('\n');
-
-             const chatText = `**${L.readFiles}**\n${linesSummary}`;
-
-            if (chunks.length === 1) {
-              this.emit('agent_message', {
-                role: 'agent',
-                text: chatText,
-                thought: fullThought,
-                action: decision.action,
-                files
-              });
-             toolFeedback = chunks[0].formattedMessage;
-           } else {
-             const firstChunk = chunks[0];
-             this.pendingChunks = chunks.slice(1);
-
-             this.emit('agent_message', {
-               role: 'agent',
-               text: fullThought || `Reading ${files.length} file(s): ${fileRangeDesc} (Batch 1 of ${chunks.length})`,
-               thought: fullThought,
-               action: 'read_files',
-               files
-             });
-             toolFeedback = firstChunk.formattedMessage;
-           }
-         }
+          console.log('📖 Reading window (≤1000 lines):', effFiles.join(', '));
+          const chunks = await this.tools.prepareFileChunks(effFiles, effRanges, 1000, (filePath, range) => {
+            const rText = range && (range.start_line || range.end_line)
+              ? ` (lines ${range.start_line || 1}-${range.end_line || 'end'})`
+              : ' (from line 1)';
+            this.emit('agent_status', { text: `Reading file: ${filePath}${rText}` });
+          });
+          const chunk = chunks[0];
+          this.readResume = chunk.hasMore ? chunk.remaining : null;
+          this.emit('agent_message', {
+            role: 'agent',
+            text: `**${L.readFiles}**\n${windowSummary(chunk)}`,
+            thought: fullThought,
+            action: decision.action,
+            files
+          });
+          this.readsDelivered++;
+          toolFeedback = chunk.formattedMessage;
+        }
       }
       else if (decision.action === 'search_code') {
         const query = decision.params?.query || '';
-        console.log(`🔍 Searching code for: "${query}"`);
-        const searchResult = await this.tools.searchCode(query, 25, decision.params?.root || null);
-
-            let searchMatchesText = searchResult.matches && searchResult.matches.length > 0
-              ? searchResult.matches.slice(0, 5).map(m => `• \`${m.file}\` (${L.lineLabel(m.line)}): \`${m.snippet}\``).join('\n')
-              : `• *${L.noMatch}*`;
-
-            this.emit('agent_message', {
-              role: 'agent',
-              text: `**${L.searchLabel}** \`${query}\` ${L.results(searchResult.totalMatches)}\n${searchMatchesText}`,
-              thought: fullThought,
-              action: 'search_code'
-            });
-
-            toolFeedback = `TOOL RESULT:\n\`\`\`json\n${JSON.stringify(searchResult, null, 2)}\n\`\`\``;
+        const searchSig = `${query}::${decision.params?.root || ''}`;
+        if (searchSig === lastSearchSignature) {
+          toolFeedback = '⚠️ NOTICE: You already ran this EXACT search in the previous turn — its results are above in your context. Do NOT repeat it. Either read the suggested "window" of the relevant hit with "read_file", or refine the query to a longer / more unique literal.';
+        } else {
+          lastSearchSignature = searchSig;
+          console.log(`🔍 Searching code for: "${query}"`);
+          const searchResult = await this.tools.searchCode(query, 25, decision.params?.root || null);
+          const hits = searchResult.matches || [];
+          const searchMatchesText = hits.length > 0
+            ? hits.slice(0, 5).map(m => `• \`${m.file}\` (${L.lineLabel(m.line)}${m.totalLines ? ` / ${m.totalLines}` : ''}): \`${m.snippet}\``).join('\n')
+            : `• *${L.noMatch}*`;
+          this.emit('agent_message', {
+            role: 'agent',
+            text: `**${L.searchLabel}** \`${query}\` ${L.results(searchResult.totalMatches)}\n${searchMatchesText}`,
+            thought: fullThought,
+            action: 'search_code'
+          });
+          const nextStep = hits.length > 0
+            ? `\n\nNEXT STEP: pick the relevant hit and call "read_file" with its "window" (start_line/end_line), or request multiple slices in one "read_files" call.`
+            : `\n\nNo matches. "search_code" is a literal case-sensitive substring. Try a shorter unique token.`;
+          toolFeedback = `TOOL RESULT:\n\`\`\`json\n${JSON.stringify(searchResult, null, 2)}\n\`\`\`${nextStep}`;
+        }
       }
       else if (decision.action === 'list_dir') {
         const target = decision.params?.path || '.';
         const depth = typeof decision.params?.depth === 'number' ? decision.params.depth : 3;
 
-        // اگر دقیقاً همین پوشه را در دور قبل درخواست داده بود، جلوی درخواست تکراری را بگیر
         if (lastListSignature === `${target}:${depth}`) {
           console.log(`🛑 Loop detected on list_dir: ${target}`);
-          toolFeedback = `⚠️ NOTICE: You already received the directory listing for "${target}" in the previous turn. Look at your conversation history above and proceed directly with "finish" or inspection of specific files using "read_files".`;
+          toolFeedback = `⚠️ NOTICE: You already received the directory listing for "${target}" in the previous turn. Proceed directly with "read_files" or "finish".`;
         } else {
           lastListSignature = `${target}:${depth}`;
           console.log(`📂 Listing directory: ${target}`);
@@ -862,11 +887,28 @@ Their full content is already displayed right above in your conversation history
         }
       }
       else if (decision.action === 'continue_reading') {
-        if (this.pendingChunks.length > 0) {
-          const nextChunk = this.pendingChunks.shift();
-          toolFeedback = nextChunk.formattedMessage;
+        if (Array.isArray(this.readResume) && this.readResume.length > 0) {
+          const files = this.readResume.map(r => r.path);
+          const ranges = {};
+          for (const r of this.readResume) {
+            if (r.startLine >= 1) ranges[r.path] = { start_line: r.startLine, end_line: r.endLine };
+          }
+          const chunks = await this.tools.prepareFileChunks(files, ranges, 1000);
+          const chunk = chunks[0];
+          this.readResume = chunk.hasMore ? chunk.remaining : null;
+          lastReadSignature = null;
+          loopRepeatCount = 0;
+          this.emit('agent_message', {
+            role: 'agent',
+            text: `**${L.readFiles}**\n${windowSummary(chunk)}`,
+            thought: fullThought,
+            action: 'continue_reading',
+            files
+          });
+          this.readsDelivered++;
+          toolFeedback = chunk.formattedMessage;
         } else {
-          toolFeedback = 'All requested files have already been fully delivered. Please proceed with your analysis or code actions.';
+          toolFeedback = 'All requested file content has already been delivered completely. Proceed with "patch_file" / "search_code" / "finish".';
         }
       }
       else if (decision.action === 'patch_file') {
@@ -874,7 +916,6 @@ Their full content is already displayed right above in your conversation history
         let patchResult;
         let patchesList = [];
 
-        
         if (Array.isArray(decision.params?.patches) && decision.params.patches.length > 0) {
           patchesList = decision.params.patches;
         } else if (decision.params?.file && decision.params?.search) {
@@ -885,85 +926,82 @@ Their full content is already displayed right above in your conversation history
           }];
         }
 
-        
-        
         if (patchesList.length === 0) {
           console.warn('⚠️ patch_file arrived with no recoverable patches (malformed/truncated JSON). Requesting resend...');
           await this.randomDelay(1200, 2200, 'Patch Parse Retry');
           if (this.isStopped) break;
-          const retryMsg = 'Your previous patch_file JSON could not be parsed (malformed escapes or truncated output). Re-send the SAME patches now as ONE valid ```json block: escape every newline inside "search"/"replace" as \\n and every double quote as \\". No prose outside the block.';
+          const retryMsg =
+            `Your previous patch_file JSON could not be parsed. Re-send the SAME patches inside ONE valid \`\`\`json block (escape newlines as \\n and quotes as \\").\n` +
+            (this.taskIsChange ? taskReminderBlock(this.activeTask) : '');
           this.emit('agent_status', { text: 'Patch JSON was malformed — asking model to resend...' });
           lastSentMessage = retryMsg;
-          await this.driver.sendMessage(retryMsg);
+          await this.driver.sendMessage(retryMsg, { provider: options.provider });
           continue;
         }
 
         const isAutoApply = Boolean(options.autoApplyPatch);
 
-        
         if (!isAutoApply && patchesList.length > 0) {
           const firstPatch = patchesList[0];
           this.emit('agent_status', { text: `Waiting for user approval to patch ${firstPatch.file}...` });
-          
-           this.emit('patch_proposed', {
-             file: firstPatch.file,
-             search: firstPatch.search,
-             replace: firstPatch.replace,
-             patch: firstPatch,
-             patches: patchesList
-           });
 
-          
+          this.emit('patch_proposed', {
+            file: firstPatch.file,
+            search: firstPatch.search,
+            replace: firstPatch.replace,
+            patch: firstPatch,
+            patches: patchesList
+          });
+
           const approved = await new Promise(resolve => {
             this.patchResolver = resolve;
           });
 
           if (!approved) {
-             toolFeedback = `TOOL RESULT: The user REJECTED this patch. Please explain alternative solutions or ask what needs to be changed.`;
-              this.emit('agent_message', {
-                role: 'agent',
-                text: L.rejected(firstPatch.file),
-                thought: fullThought,
-                action: 'patch_file'
-              });
-              lastSentMessage = toolFeedback;
-              await this.driver.sendMessage(toolFeedback);
-              continue;
+            toolFeedback = 'TOOL RESULT: The user REJECTED this patch. Explain alternatives or call "finish".';
+            this.emit('agent_message', {
+              role: 'agent',
+              text: L.rejected(firstPatch.file),
+              thought: fullThought,
+              action: 'patch_file'
+            });
+            lastSentMessage = toolFeedback;
+            await this.driver.sendMessage(toolFeedback, { provider: options.provider });
+            continue;
           }
         }
 
-        
         this.emit('agent_status', { text: `Applying ${patchesList.length} patch(es)...` });
         patchResult = await this.tools.patchBatch(patchesList);
+        if (patchResult && patchResult.successful > 0) this.mutationsApplied += patchResult.successful;
 
-         const summaryLines = patchResult.details.map(d => 
-           d.success ? `• \`${d.file}\`: ${L.patchOk}` : `• \`${d.file}\`: ${L.patchErr(d.message)}`
-         ).join('\n');
+        const summaryLines = patchResult.details.map(d =>
+          d.success ? `• \`${d.file}\`: ${L.patchOk}` : `• \`${d.file}\`: ${L.patchErr(d.message)}`
+        ).join('\n');
 
-         const userFacingText = `**${L.patchesLabel(patchResult.successful, patchResult.total)}**\n${summaryLines}`;
+        const userFacingText = `**${L.patchesLabel(patchResult.successful, patchResult.total)}**\n${summaryLines}`;
 
-          
-          const successfulEdits = [];
-          if (patchResult && Array.isArray(patchResult.details)) {
-            patchResult.details.forEach((d, idx) => {
-              if (d.success && patchesList[idx]) {
-                successfulEdits.push({
-                  file: patchesList[idx].file,
-                  search: patchesList[idx].search,
-                  replace: patchesList[idx].replace
-                });
-              }
-            });
-          }
-
-          this.emit('agent_message', {
-            role: 'agent',
-            text: userFacingText,
-            thought: fullThought,
-            action: 'patch_file',
-            result: patchResult,
-            edits: successfulEdits 
+        const successfulEdits = [];
+        if (patchResult && Array.isArray(patchResult.details)) {
+          patchResult.details.forEach((d, idx) => {
+            if (d.success && patchesList[idx]) {
+              successfulEdits.push({
+                file: patchesList[idx].file,
+                search: patchesList[idx].search,
+                replace: patchesList[idx].replace
+              });
+            }
           });
+        }
+
+        this.emit('agent_message', {
+          role: 'agent',
+          text: userFacingText,
+          thought: fullThought,
+          action: 'patch_file',
+          result: patchResult,
+          edits: successfulEdits
+        });
 
         toolFeedback = `TOOL RESULT:\n\`\`\`json\n${JSON.stringify(patchResult, null, 2)}\n\`\`\``;
       }
@@ -979,13 +1017,13 @@ Their full content is already displayed right above in your conversation history
         });
         this.emit('agent_status', { text: `Creating file: ${file}` });
         const createResult = await this.tools.createFile(file, content);
+        if (createResult && createResult.success) this.mutationsApplied++;
 
         toolFeedback = `TOOL RESULT:\n\`\`\`json\n${JSON.stringify(createResult, null, 2)}\n\`\`\``;
       }
       else if (decision.action === 'execute_command') {
-        
         const command = decision.params?.command || decision.params?.cmd || decision.command;
-        
+
         if (!command || typeof command !== 'string' || !command.trim()) {
           console.warn('⚠️ execute_command received with empty command');
           toolFeedback = 'TOOL RESULT: Error - No valid shell command was provided in parameters.';
@@ -995,7 +1033,7 @@ Their full content is already displayed right above in your conversation history
           const isAutoApprove = Boolean(options.autoApproveCommand);
 
           if (!isAutoApprove) {
-            this.emit('agent_status', { text: `Waiting for user approval to run command...` });
+            this.emit('agent_status', { text: 'Waiting for user approval to run command...' });
             this.emit('command_proposed', { command });
 
             const approved = await new Promise(resolve => {
@@ -1003,7 +1041,7 @@ Their full content is already displayed right above in your conversation history
             });
 
             if (!approved) {
-              toolFeedback = `TOOL RESULT: The user REJECTED this command: "${command}". Please explain alternative solutions.`;
+              toolFeedback = `TOOL RESULT: The user REJECTED this command: "${command}". Propose an alternative or finish.`;
               this.emit('agent_message', {
                 role: 'agent',
                 text: `Command \`${command}\` was rejected by the user.`,
@@ -1012,7 +1050,7 @@ Their full content is already displayed right above in your conversation history
                 command
               });
               lastSentMessage = toolFeedback;
-              await this.driver.sendMessage(toolFeedback);
+              await this.driver.sendMessage(toolFeedback, { provider: options.provider });
               continue;
             }
           }
@@ -1020,7 +1058,7 @@ Their full content is already displayed right above in your conversation history
           this.emit('agent_message', {
             role: 'agent',
             text: fullThought || `Executing command: ${command}`,
-            thought: fullThought, 
+            thought: fullThought,
             action: 'execute_command',
             command
           });
@@ -1029,67 +1067,64 @@ Their full content is already displayed right above in your conversation history
           toolFeedback = `TOOL RESULT:\n\`\`\`json\n${JSON.stringify(execResult, null, 2)}\n\`\`\``;
         }
       }
-    else if (decision.action === 'browse_web') {
-      if (!this.browser) {
-        toolFeedback = 'TOOL RESULT: Embedded browser is not available in this environment.';
-      } else {
-        const target = decision.params?.url || decision.params?.query || '';
-        console.log(`🌐 Browsing: ${target}`);
-        this.emit('agent_status', { text: `Browsing: ${target}` });
-        const res = await this.browser.navigate(target);
-        this.emit('agent_message', {
-          role: 'agent',
-          text: `**Browsed:** \`${res.title}\` (${res.url})`,
-          thought: fullThought,
-          action: 'browse_web'
-        });
-        toolFeedback = `TOOL RESULT: PAGE OPENED IN EMBEDDED BROWSER\nTITLE: ${res.title}\nURL: ${res.url}\n--- VISIBLE TEXT (first 3000 chars) ---\n${String(res.text || '').slice(0, 3000)}`;
+      else if (decision.action === 'browse_web') {
+        if (!this.browser) {
+          toolFeedback = 'TOOL RESULT: Embedded browser is not available in this environment.';
+        } else {
+          const target = decision.params?.url || decision.params?.query || '';
+          console.log(`🌐 Browsing: ${target}`);
+          this.emit('agent_status', { text: `Browsing: ${target}` });
+          const res = await this.browser.navigate(target);
+          this.emit('agent_message', {
+            role: 'agent',
+            text: `**Browsed:** \`${res.title}\` (${res.url})`,
+            thought: fullThought,
+            action: 'browse_web'
+          });
+          toolFeedback = `TOOL RESULT: PAGE OPENED IN EMBEDDED BROWSER\nTITLE: ${res.title}\nURL: ${res.url}\n--- VISIBLE TEXT (first 3000 chars) ---\n${String(res.text || '').slice(0, 3000)}`;
+        }
       }
-    }
-    else if (decision.action === 'read_page') {
-      if (!this.browser) {
-        toolFeedback = 'TOOL RESULT: Embedded browser is not available in this environment.';
-      } else {
-        const start = typeof decision.params?.start_line === 'number' ? decision.params.start_line : 1;
-        const end = typeof decision.params?.end_line === 'number' ? decision.params.end_line : start + 149;
-        const res = await this.browser.readRange(start, end);
-        this.emit('agent_message', {
-          role: 'agent',
-          text: `**Read page:** \`${res.title}\` (${L.linesRange(start, Math.min(end, res.totalLines))})`,
-          thought: fullThought,
-          action: 'read_page'
-        });
-        const body = res.lines.map(l => `${l.lineNum} | ${l.text}`).join('\n');
-        toolFeedback = `TOOL RESULT: CURRENT EMBEDDED BROWSER PAGE\nTITLE: ${res.title}\nURL: ${res.url}\nTOTAL LINES: ${res.totalLines}\nSHOWING ${start}-${Math.min(end, res.totalLines)}:\n${body || '(empty page)'}`;
+      else if (decision.action === 'read_page') {
+        if (!this.browser) {
+          toolFeedback = 'TOOL RESULT: Embedded browser is not available in this environment.';
+        } else {
+          const start = typeof decision.params?.start_line === 'number' ? decision.params.start_line : 1;
+          const end = typeof decision.params?.end_line === 'number' ? decision.params.end_line : start + 149;
+          const res = await this.browser.readRange(start, end);
+          this.emit('agent_message', {
+            role: 'agent',
+            text: `**Read page:** \`${res.title}\` (${L.linesRange(start, Math.min(end, res.totalLines))})`,
+            thought: fullThought,
+            action: 'read_page'
+          });
+          const body = res.lines.map(l => `${l.lineNum} | ${l.text}`).join('\n');
+          toolFeedback = `TOOL RESULT: CURRENT EMBEDDED BROWSER PAGE\nTITLE: ${res.title}\nURL: ${res.url}\nTOTAL LINES: ${res.totalLines}\nSHOWING ${start}-${Math.min(end, res.totalLines)}:\n${body || '(empty page)'}`;
+        }
       }
-    }
       else {
-        toolFeedback = `Unknown action: "${decision.action}". Please choose one of: "read_files", "read_file", "search_code", "list_dir", "patch_file", "create_file", "execute_command", "finish".`;
+        toolFeedback = `Unknown action: "${decision.action}". Choose one of: "read_files", "read_file", "continue_reading", "search_code", "list_dir", "patch_file", "create_file", "execute_command", "browse_web", "read_page", "finish".`;
       }
 
       if (this.isStopped) break;
 
-      
       await this.randomDelay(3000, 7000, 'Pacing');
       if (this.isStopped) break;
 
-      const protocolReminder = `\n\nCRITICAL INSTRUCTION:\nReply ONLY with a single JSON action block inside \`\`\`json\`\`\`. Do not write conversational prose outside the JSON:\nFORMAT: Every user-visible text must be markdown — bullet lists + identifiers wrapped in backticks (\`file.js\`, \`npm test\`). Never a plain paragraph wall:\n\`\`\`json\n{\n  "thought": "your concise reasoning in English",\n  "action": "patch_file" | "read_files" | "search_code" | "create_file" | "execute_command" | "finish",\n  "params": { ... }\n}\n\`\`\``;
+      toolFeedback += `\n\nReply ONLY with ONE \`\`\`json block (next action or "finish" with Markdown "summary").`;
+      if (this.taskIsChange && this.mutationsApplied === 0) {
+        toolFeedback += taskReminderBlock(this.activeTask);
+      }
 
-      toolFeedback += protocolReminder;
-
-
-if (toolFeedback.length > 60000) {
-  toolFeedback = toolFeedback.slice(0, 35000) +
-    `
-... [TRUNCATED FOR CONTEXT LIMIT] ...
-` +
-    toolFeedback.slice(-20000);
-}
+      if (toolFeedback.length > 60000) {
+        toolFeedback = toolFeedback.slice(0, 35000) +
+          '\n... [TRUNCATED FOR CONTEXT LIMIT] ...\n' +
+          toolFeedback.slice(-20000);
+      }
 
       console.log(`📤 Sending results back to ${P}...`);
       this.emit('agent_status', { text: `Sending results back to ${P}...` });
       lastSentMessage = toolFeedback;
-      await this.driver.sendMessage(toolFeedback);
+      await this.driver.sendMessage(toolFeedback, { provider: options.provider });
     }
 
     if (this.isStopped) {

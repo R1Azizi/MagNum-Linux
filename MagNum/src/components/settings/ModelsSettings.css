@@ -1,0 +1,120 @@
+.mn-models { display: flex; flex-direction: column; gap: 18px; }
+.mn-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
+.mn-head h2 { font-size: 18px; font-weight: 800; color: var(--text-main); letter-spacing: -0.2px; }
+.mn-head p { font-size: 12px; color: var(--text-dim); margin-top: 5px; line-height: 1.7; max-width: 460px; }
+.mn-current { display: flex; align-items: center; gap: 8px; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 999px; padding: 6px 14px 6px 8px; font-size: 11.5px; font-weight: 700; color: var(--text-main); box-shadow: 0 4px 16px var(--shadow-heavy); }
+.mn-current .mn-current-logo { width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: rgba(var(--pc-rgb), 0.14); color: var(--pc); animation: mn-chip-in 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+.mn-current small { display: block; font-size: 9px; font-weight: 600; color: var(--text-dim); letter-spacing: 0.4px; }
+.mn-cards { display: flex; flex-direction: column; gap: 12px; }
+.mn-card { --pc: var(--accent-green); --pc-rgb: 16, 185, 129; position: relative; overflow: hidden; background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 16px; padding: 16px 18px; cursor: pointer; outline: none; transition: border-color 0.25s ease, box-shadow 0.3s ease, transform 0.2s ease, background 0.3s ease; animation: mn-card-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.mn-card:hover { border-color: rgba(var(--pc-rgb), 0.4); transform: translateY(-1px); }
+.mn-card:focus-visible { box-shadow: 0 0 0 2px rgba(var(--pc-rgb), 0.55); }
+.mn-card.is-default { border-color: rgba(var(--pc-rgb), 0.6); background: linear-gradient(150deg, rgba(var(--pc-rgb), 0.09) 0%, var(--bg-surface) 58%); box-shadow: 0 0 0 1px rgba(var(--pc-rgb), 0.22), 0 12px 36px rgba(var(--pc-rgb), 0.13); }
+.mn-burst { position: absolute; inset: -2px; border-radius: 18px; border: 2px solid rgba(var(--pc-rgb), 0.85); pointer-events: none; animation: mn-burst 0.75s ease-out forwards; }
+.mn-shine { position: absolute; top: 0; bottom: 0; width: 45%; left: 0; background: linear-gradient(105deg, transparent 0%, rgba(255, 255, 255, 0.14) 50%, transparent 100%); transform: translateX(-160%) skewX(-16deg); pointer-events: none; animation: mn-shine 0.85s ease-out forwards; }
+.mn-card-top { display: flex; align-items: center; gap: 14px; }
+.mn-logo-wrap { position: relative; width: 56px; height: 56px; flex-shrink: 0; }
+.mn-logo { position: absolute; inset: 6px; border-radius: 14px; background: var(--bg-card); border: 1px solid var(--border-subtle); display: flex; align-items: center; justify-content: center; color: var(--pc); transition: color 0.3s ease, border-color 0.3s ease, background 0.3s ease; }
+.mn-card.is-default .mn-logo { border-color: rgba(var(--pc-rgb), 0.5); background: rgba(var(--pc-rgb), 0.12); animation: mn-pop 0.55s cubic-bezier(0.34, 1.56, 0.64, 1); }
+/* حلقهٔ ثابت و کاملاً متقارن دور لوگو — دایرهٔ واقعی، نه ماسک روی مربع گرد */
+.mn-logo-ring {
+  position: absolute;
+  inset: -2px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity 0.45s ease;
+  pointer-events: none;
+}
+.mn-card.is-default .mn-logo-ring {
+  opacity: 1;
+  animation: mn-spin 7s linear infinite;
+  filter: drop-shadow(0 0 3px rgba(var(--pc-rgb), 0.6))
+          drop-shadow(0 0 8px rgba(var(--pc-rgb), 0.32));
+}
+
+
+
+/* دو نور دنباله‌دار، دقیقاً ۱۸۰ درجه روبه‌روی هم — سر روشن، دنبالهٔ محوشونده */
+.mn-logo-ring::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    rgba(var(--pc-rgb), 0)    0deg,
+    rgba(var(--pc-rgb), 0.03) 18deg,
+    rgba(var(--pc-rgb), 0.10) 36deg,
+    rgba(var(--pc-rgb), 0.26) 52deg,
+    rgba(var(--pc-rgb), 0.55) 62deg,
+    rgba(var(--pc-rgb), 0.90) 68deg,
+    rgba(var(--pc-rgb), 1)    72deg,
+    rgba(var(--pc-rgb), 0)    72.6deg,
+    rgba(var(--pc-rgb), 0)    180deg,
+    rgba(var(--pc-rgb), 0.03) 198deg,
+    rgba(var(--pc-rgb), 0.10) 216deg,
+    rgba(var(--pc-rgb), 0.26) 232deg,
+    rgba(var(--pc-rgb), 0.55) 242deg,
+    rgba(var(--pc-rgb), 0.90) 248deg,
+    rgba(var(--pc-rgb), 1)    252deg,
+    rgba(var(--pc-rgb), 0)    252.6deg,
+    rgba(var(--pc-rgb), 0)    360deg
+  );
+  -webkit-mask: radial-gradient(farthest-side,
+    transparent calc(100% - 3.2px),
+    #000 calc(100% - 2.2px),
+    #000 calc(100% - 0.6px),
+    transparent 100%);
+  mask: radial-gradient(farthest-side,
+    transparent calc(100% - 3.2px),
+    #000 calc(100% - 2.2px),
+    #000 calc(100% - 0.6px),
+    transparent 100%);
+}
+.mn-logo-pulse { display: none; }
+.mn-meta { flex: 1; min-width: 0; }
+.mn-name-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mn-name { font-size: 14.5px; font-weight: 800; color: var(--text-main); }
+.mn-card.is-default .mn-name { color: var(--pc); }
+.mn-tag { display: block; font-size: 11.5px; color: var(--text-dim); margin-top: 3px; line-height: 1.5; }
+.mn-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 9px; font-weight: 800; letter-spacing: 0.6px; color: var(--pc); background: rgba(var(--pc-rgb), 0.14); border: 1px solid rgba(var(--pc-rgb), 0.45); padding: 2px 8px; border-radius: 999px; animation: mn-badge-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+.mn-check-path { stroke-dasharray: 20; stroke-dashoffset: 20; animation: mn-check 0.45s 0.12s ease-out forwards; }
+.mn-radio { width: 26px; height: 26px; border-radius: 50%; flex-shrink: 0; border: 2px solid var(--border-subtle); background: transparent; display: flex; align-items: center; justify-content: center; color: var(--pc); cursor: pointer; transition: border-color 0.25s ease, background 0.25s ease, transform 0.2s ease; }
+.mn-card:hover .mn-radio { border-color: rgba(var(--pc-rgb), 0.5); }
+.mn-card.is-default .mn-radio { border-color: var(--pc); background: rgba(var(--pc-rgb), 0.16); animation: mn-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.mn-think { margin-top: 14px; padding-top: 13px; border-top: 1px solid var(--border-subtle); display: flex; align-items: center; justify-content: space-between; gap: 14px; cursor: default; }
+.mn-think-info { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.mn-think-icon { position: relative; width: 30px; height: 30px; border-radius: 9px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: var(--bg-card); border: 1px solid var(--border-subtle); color: var(--text-dim); transition: color 0.3s ease, border-color 0.3s ease, background 0.3s ease; }
+.mn-think-icon.active { color: var(--pc); border-color: rgba(var(--pc-rgb), 0.45); background: rgba(var(--pc-rgb), 0.1); }
+.mn-think-ping { position: absolute; inset: -1px; border-radius: 10px; border: 1.5px solid rgba(var(--pc-rgb), 0.8); animation: mn-burst 0.6s ease-out forwards; pointer-events: none; }
+.mn-think-label { font-size: 12.5px; font-weight: 700; color: var(--text-main); }
+.mn-think-desc { font-size: 10.5px; color: var(--text-dim); margin-top: 2px; line-height: 1.5; }
+.mn-toggle { position: relative; width: 48px; height: 27px; flex-shrink: 0; border-radius: 999px; border: 1px solid var(--border-subtle); background: var(--bg-card); cursor: pointer; padding: 0; transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease; }
+.mn-toggle.on { background: rgba(var(--pc-rgb), 0.28); border-color: rgba(var(--pc-rgb), 0.65); box-shadow: 0 0 14px rgba(var(--pc-rgb), 0.3); }
+.mn-toggle-knob { position: absolute; top: 2.5px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--text-dim); display: flex; align-items: center; justify-content: center; transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.3s ease, box-shadow 0.3s ease; }
+.mn-toggle.on .mn-toggle-knob { transform: translateX(21px); background: var(--pc); box-shadow: 0 0 10px rgba(var(--pc-rgb), 0.65); }
+.mn-toggle-knob svg { color: var(--bg-surface); opacity: 0; transform: scale(0.4); transition: opacity 0.25s ease 0.1s, transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) 0.1s; }
+.mn-toggle.on .mn-toggle-knob svg { opacity: 1; transform: scale(1); }
+.mn-toggle-ping { position: absolute; inset: -2px; border-radius: 999px; border: 2px solid rgba(var(--pc-rgb), 0.8); animation: mn-burst 0.55s ease-out forwards; pointer-events: none; }
+.mn-seg { position: relative; display: flex; flex-shrink: 0; background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 11px; padding: 3px; width: 216px; }
+.mn-seg-thumb { position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / 3); border-radius: 8px; background: rgba(var(--pc-rgb), 0.2); border: 1px solid rgba(var(--pc-rgb), 0.55); box-shadow: 0 0 12px rgba(var(--pc-rgb), 0.22); transform: translateX(calc(var(--seg-i) * 100%)); transition: transform 0.38s cubic-bezier(0.34, 1.56, 0.64, 1); pointer-events: none; }
+.mn-seg button { flex: 1; position: relative; z-index: 1; background: transparent; border: none; cursor: pointer; font-size: 11px; font-weight: 600; font-family: inherit; color: var(--text-dim); padding: 6px 0; border-radius: 8px; transition: color 0.25s ease; text-transform: capitalize; }
+.mn-seg button.active { color: var(--pc); font-weight: 800; }
+.mn-seg button:hover:not(.active) { color: var(--text-main); }
+.mn-foot { font-size: 11px; color: var(--text-dim); line-height: 1.8; padding: 2px 4px; }
+@keyframes mn-card-in { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes mn-pop { 0% { transform: scale(0.82); } 60% { transform: scale(1.08); } 100% { transform: scale(1); } }
+@keyframes mn-spin { to { transform: rotate(360deg); } }
+@keyframes mn-pulse {
+  0%   { opacity: 0.5; transform: scale(1); }
+  70%  { opacity: 0;   transform: scale(1.16); }
+  100% { opacity: 0;   transform: scale(1.16); }
+}
+@keyframes mn-burst { 0% { opacity: 0.9; transform: scale(0.98); } 100% { opacity: 0; transform: scale(1.06); } }
+@keyframes mn-shine { to { transform: translateX(340%) skewX(-16deg); } }
+@keyframes mn-badge-in { from { opacity: 0; transform: scale(0.5); } to { opacity: 1; transform: scale(1); } }
+@keyframes mn-check { to { stroke-dashoffset: 0; } }
+@keyframes mn-chip-in { from { opacity: 0; transform: scale(0.6) rotate(-12deg); } to { opacity: 1; transform: scale(1) rotate(0); } }
+@media (max-width: 640px) { .mn-think { flex-direction: column; align-items: stretch; } .mn-seg { width: 100%; } .mn-toggle { align-self: flex-end; } }
+@media (prefers-reduced-motion: reduce) { .mn-card, .mn-logo, .mn-logo-ring, .mn-logo-ring::after, .mn-logo-pulse, .mn-burst, .mn-shine, .mn-badge, .mn-check-path, .mn-radio, .mn-toggle-knob, .mn-seg-thumb, .mn-current .mn-current-logo, .mn-think-ping, .mn-toggle-ping { animation: none !important; transition: none !important; } .mn-check-path { stroke-dashoffset: 0; } }

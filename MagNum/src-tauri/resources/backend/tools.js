@@ -62,7 +62,7 @@ function runRustFs(payload, timeoutMs = 120000) {
   });
 }
 
-const MAX_LINES_PER_BATCH = 800;
+const MAX_LINES_PER_BATCH = 1000; // HARD universal cap — every delivery is ONE ≤1000-line window
 
 class ProjectTools {
   constructor(workspaceDir, ignoredPatterns = []) {
@@ -171,221 +171,110 @@ class ProjectTools {
 
   
   async prepareFileChunks(filePaths = [], ranges = {}, maxLinesPerBatch = MAX_LINES_PER_BATCH, onProgress = null) {
+    // Universal hard cap: ONE contiguous window of at most 1000 lines total, never more.
+    const cap = Math.min(Math.max(1, Number(maxLinesPerBatch) || MAX_LINES_PER_BATCH), MAX_LINES_PER_BATCH);
+
     const fileDetailsList = [];
     for (const filePath of filePaths) {
       const range = ranges[filePath] || null;
-      if (typeof onProgress === 'function') {
-        onProgress(filePath, range);
-      }
-      const details = await this.readFileDetails(filePath, range);
-      fileDetailsList.push(details);
+      if (typeof onProgress === 'function') onProgress(filePath, range);
+      fileDetailsList.push(await this.readFileDetails(filePath, range));
     }
 
     let totalRequestedLines = 0;
-    for (const f of fileDetailsList) {
-      totalRequestedLines += f.error ? 1 : f.lines.length;
-    }
+    for (const f of fileDetailsList) totalRequestedLines += f.error ? 1 : f.lines.length;
 
-    const rawChunks = [];
-    let currentChunkSegments = [];
-    let currentChunkLineCount = 0;
+    const segments = [];
+    const remaining = []; // resume plan for the NEXT window — no gaps, no overlaps
+    let used = 0;
 
-    for (const fileDetail of fileDetailsList) {
-      if (fileDetail.error) {
-        if (currentChunkLineCount >= maxLinesPerBatch && currentChunkSegments.length > 0) {
-          rawChunks.push(currentChunkSegments);
-          currentChunkSegments = [];
-          currentChunkLineCount = 0;
-        }
-        currentChunkSegments.push({
-          path: fileDetail.path,
-          error: fileDetail.error,
-          totalFileLines: 0,
-          startLine: 0,
-          endLine: 0,
-          isComplete: false,
-          isStartOfFile: false,
-          isEndOfFile: false,
-          lines: []
-        });
-        currentChunkLineCount += 1;
+    for (const fd of fileDetailsList) {
+      if (fd.error) {
+        if (used >= cap) { remaining.push({ path: fd.path, startLine: 0, endLine: 0, error: fd.error }); continue; }
+        segments.push({ path: fd.path, error: fd.error, totalFileLines: 0, startLine: 0, endLine: 0, isComplete: false, isStartOfFile: false, isEndOfFile: false, lines: [] });
+        used += 1;
         continue;
       }
-
-      let lineOffset = 0;
-      const fileLines = fileDetail.lines;
-
-      while (lineOffset < fileLines.length) {
-        const capacity = maxLinesPerBatch - currentChunkLineCount;
-        if (capacity <= 0) {
-          rawChunks.push(currentChunkSegments);
-          currentChunkSegments = [];
-          currentChunkLineCount = 0;
-          continue;
-        }
-
-        const countToTake = Math.min(fileLines.length - lineOffset, capacity);
-        const segmentLines = fileLines.slice(lineOffset, lineOffset + countToTake);
-        const startLine = segmentLines[0].lineNum;
-        const endLine = segmentLines[segmentLines.length - 1].lineNum;
-        const isStartOfFile = (startLine === fileDetail.startLine);
-        const isEndOfFile = (endLine === fileDetail.endLine);
-        const isComplete = (isStartOfFile && isEndOfFile && segmentLines.length === fileDetail.totalLines);
-
-        currentChunkSegments.push({
-          path: fileDetail.path,
-          error: null,
-          totalFileLines: fileDetail.totalLines,
-          startLine,
-          endLine,
-          isStartOfFile,
-          isEndOfFile,
-          isComplete,
-          lines: segmentLines
+      if (used >= cap) {
+        remaining.push({ path: fd.path, startLine: fd.startLine, endLine: fd.endLine, totalLines: fd.totalLines });
+        continue;
+      }
+      const take = Math.min(fd.lines.length, cap - used);
+      const segLines = fd.lines.slice(0, take);
+      if (take > 0) {
+        const startLine = segLines[0].lineNum;
+        const endLine = segLines[segLines.length - 1].lineNum;
+        segments.push({
+          path: fd.path, error: null, totalFileLines: fd.totalLines,
+          startLine, endLine,
+          isStartOfFile: startLine === fd.startLine,
+          isEndOfFile: endLine === fd.endLine,
+          isComplete: startLine === fd.startLine && endLine === fd.endLine && take === fd.totalLines,
+          lines: segLines
         });
-
-        lineOffset += countToTake;
-        currentChunkLineCount += countToTake;
-
-        if (currentChunkLineCount >= maxLinesPerBatch && lineOffset < fileLines.length) {
-          rawChunks.push(currentChunkSegments);
-          currentChunkSegments = [];
-          currentChunkLineCount = 0;
-        }
+        used += take;
+      }
+      if (take < fd.lines.length) {
+        remaining.push({ path: fd.path, startLine: fd.lines[take].lineNum, endLine: fd.endLine, totalLines: fd.totalLines });
       }
     }
 
-    if (currentChunkSegments.length > 0) {
-      rawChunks.push(currentChunkSegments);
-    }
+    const hasMore = remaining.length > 0;
+    const formattedMessage = this.formatFileChunkMessage({ segments, chunkLinesCount: used, totalRequestedLines, remaining, hasMore });
 
-    if (rawChunks.length === 0) {
-      rawChunks.push([]);
-    }
-
-    const totalBatches = rawChunks.length;
-    const formattedChunks = [];
-
-    for (let i = 0; i < totalBatches; i++) {
-      const segments = rawChunks[i];
-      let chunkLinesCount = 0;
-      for (const seg of segments) {
-        chunkLinesCount += seg.error ? 1 : seg.lines.length;
-      }
-
-      
-      const pendingList = [];
-      for (let j = i + 1; j < totalBatches; j++) {
-        for (const futureSeg of rawChunks[j]) {
-          if (futureSeg.error) continue;
-          const existing = pendingList.find(p => p.path === futureSeg.path);
-          if (existing) {
-            existing.endLine = Math.max(existing.endLine, futureSeg.endLine);
-            existing.count += futureSeg.lines.length;
-          } else {
-            pendingList.push({
-              path: futureSeg.path,
-              startLine: futureSeg.startLine,
-              endLine: futureSeg.endLine,
-              count: futureSeg.lines.length
-            });
-          }
-        }
-      }
-
-      const formattedMessage = this.formatFileChunkMessage({
-        segments,
-        chunkLinesCount,
-        batchIndex: i + 1,
-        totalBatches,
-        totalRequestedLines,
-        pendingList
-      });
-
-      formattedChunks.push({
-        batchIndex: i + 1,
-        totalBatches,
-        chunkLinesCount,
-        totalRequestedLines,
-        hasMore: (i + 1) < totalBatches,
-        pendingCount: pendingList.reduce((acc, p) => acc + p.count, 0),
-        formattedMessage
-      });
-    }
-
-    return formattedChunks;
+    return [{
+      batchIndex: 1,
+      totalBatches: 1,
+      chunkLinesCount: used,
+      totalRequestedLines,
+      hasMore,
+      pendingCount: remaining.reduce((acc, r) => acc + (r.error ? 1 : Math.max(0, r.endLine - r.startLine + 1)), 0),
+      remaining,
+      segments: segments.map(s => ({ path: s.path, error: s.error, startLine: s.startLine, endLine: s.endLine, totalFileLines: s.totalFileLines, isComplete: s.isComplete })),
+      formattedMessage
+    }];
   }
 
   
-  formatFileChunkMessage({ segments, chunkLinesCount, batchIndex, totalBatches, totalRequestedLines, pendingList }) {
-    const isMultiPart = totalBatches > 1;
-    const isFinal = batchIndex === totalBatches;
-
+  formatFileChunkMessage({ segments, chunkLinesCount, totalRequestedLines, remaining, hasMore }) {
     let msg = '';
-    if (isMultiPart) {
-      if (!isFinal) {
-        msg += `=== TOOL RESULT: MULTI-PART FILE DELIVERY (BATCH ${batchIndex} OF ${totalBatches}) ===\n`;
-        msg += `⚠️ NOTICE: The requested files exceed the single-request limit (${MAX_LINES_PER_BATCH} lines). Delivering in chunks.\n`;
-        msg += `📊 Batch ${batchIndex} lines: ${chunkLinesCount} lines | Total code requested: ${totalRequestedLines} lines.\n`;
-      } else {
-        msg += `=== TOOL RESULT: MULTI-PART FILE DELIVERY (FINAL BATCH ${totalBatches} OF ${totalBatches}) ===\n`;
-        msg += `✅ FINAL BATCH: All ${totalRequestedLines} lines across all requested files are now delivered.\n`;
-      }
-    } else {
-      msg += `=== TOOL RESULT: FILE INSPECTION (${chunkLinesCount} lines) ===\n`;
-    }
-    msg += `================================================================================\n\n`;
-
+    msg += `=== TOOL RESULT: FILE WINDOW (${chunkLinesCount}/${MAX_LINES_PER_BATCH} lines — HARD UNIVERSAL LIMIT) ===\n`;
+    msg += `Every reading delivery is ONE contiguous window of at most ${MAX_LINES_PER_BATCH} lines total, across the requested files in order. Nothing is skipped.\n`;
+    msg += `================================================================================\n`;
     for (const seg of segments) {
       if (seg.error) {
-        msg += `📄 FILE: ${seg.path}\n`;
-        msg += `❌ ERROR: ${seg.error}\n\n`;
+        msg += `📄 FILE: ${seg.path}\n❌ ERROR: ${seg.error}\n`;
         continue;
       }
-
-      let statusTag = '';
-      if (seg.isComplete) {
-        statusTag = `[COMPLETE - Lines 1 to ${seg.totalFileLines} of ${seg.totalFileLines}]`;
-      } else {
-        const startTag = seg.isStartOfFile ? 'Start of file' : `Continuation from line ${seg.startLine}`;
-        const endTag = seg.isEndOfFile ? 'End of file' : `CONTINUED IN NEXT BATCH at line ${seg.endLine + 1}`;
-        statusTag = `[PARTIAL - Lines ${seg.startLine} to ${seg.endLine} of ${seg.totalFileLines} | ${startTag} -> ${endTag}]`;
-      }
-
+      const continues = remaining.some(r => r.path === seg.path && !r.error && r.startLine === seg.endLine + 1);
+      const statusTag = seg.isComplete
+        ? `[COMPLETE — lines ${seg.startLine} to ${seg.endLine} of ${seg.totalFileLines}]`
+        : continues
+          ? `[WINDOW — lines ${seg.startLine} to ${seg.endLine} of ${seg.totalFileLines} | continues at line ${seg.endLine + 1}]`
+          : seg.endLine >= seg.totalFileLines
+            ? `[END OF FILE — lines ${seg.startLine} to ${seg.endLine} of ${seg.totalFileLines}]`
+            : `[WINDOW — lines ${seg.startLine} to ${seg.endLine} of ${seg.totalFileLines} | requested range complete]`;
       msg += `📄 FILE: ${seg.path} ${statusTag}\n`;
       msg += `--------------------------------------------------------------------------------\n`;
-      for (const line of seg.lines) {
-        msg += `${line.lineNum} | ${line.text}\n`;
-      }
-      msg += `--------------------------------------------------------------------------------\n\n`;
+      for (const line of seg.lines) msg += `${line.lineNum} | ${line.text}\n`;
+      msg += `--------------------------------------------------------------------------------\n`;
     }
-
     msg += `================================================================================\n`;
-    if (isMultiPart && !isFinal) {
-      msg += `⏳ REMAINING CONTENT TO BE DELIVERED IN NEXT BATCHES:\n`;
-      for (const pend of pendingList) {
-        msg += `  • ${pend.path}: Lines ${pend.startLine} to ${pend.endLine} (${pend.count} lines pending)\n`;
+    if (hasMore) {
+      msg += `⏳ NOT FINISHED — remaining content (the next window continues EXACTLY here, no gaps/overlaps):\n`;
+      for (const r of remaining) {
+        if (r.error) msg += `  • ${r.path}: unreadable (${r.error})\n`;
+        else msg += `  • ${r.path}: lines ${r.startLine} to ${r.endLine} (${r.endLine - r.startLine + 1} lines remaining of ${r.totalLines})\n`;
       }
-      msg += `\n🛑 CRITICAL INSTRUCTION:\n`;
-      msg += `1. File inspection is currently INCOMPLETE. Do NOT write patches, create files, or conclude yet.\n`;
-      msg += `2. You must wait until all ${totalBatches} batches are delivered before taking any action.\n`;
-      msg += `3. Acknowledge this batch and receive the next chunk by replying ONLY with:\n`;
-      msg += `\`\`\`json\n`;
-      msg += `{\n`;
-      msg += `  "thought": "Received batch ${batchIndex}/${totalBatches}. Awaiting batch ${batchIndex + 1}.",\n`;
-      msg += `  "action": "continue_reading"\n`;
-      msg += `}\n`;
-      msg += `\`\`\`\n`;
-    } else if (isMultiPart && isFinal) {
-      msg += `🎉 ALL REQUESTED FILES FULLY DELIVERED (${totalBatches}/${totalBatches} batches complete).\n`;
-      msg += `You now have the full contents of all files in context. You may now inspect, analyze, and proceed with your next action:\n`;
-      msg += `("patch_file", "create_file", "execute_command", "read_files", or "finish")\n`;
+      msg += `\nHOW TO CONTINUE:\n`;
+      msg += `- If this window is enough for your task, proceed now ("patch_file" / "search_code" / "finish").\n`;
+      msg += `- If you need the NEXT ${MAX_LINES_PER_BATCH} lines, reply ONLY with:\n`;
+      msg += '\`\`\`json\n{ "thought": "Need the next window", "action": "continue_reading" }\n\`\`\`\n';
+      msg += `- Do NOT re-request lines already delivered above. A file is fully read ONLY if its header says COMPLETE.\n`;
     } else {
-      msg += `✅ All requested files loaded successfully (${totalRequestedLines} lines total).\n`;
-      msg += `Please analyze the code and proceed with your next action.\n`;
+      msg += `✅ ALL requested content delivered COMPLETELY inside this window (${chunkLinesCount} lines). Proceed with your next action.\n`;
     }
     msg += `================================================================================`;
-
     return msg;
   }
 
@@ -732,9 +621,15 @@ class ProjectTools {
 
                 for (let i = 0; i < lines.length; i++) {
                   if (lines[i].includes(query)) {
+                    const hit = i + 1;
                     matches.push({
                       file: relPath,
-                      line: i + 1,
+                      line: hit,
+                      totalLines: lines.length,
+                      window: {
+                        start_line: Math.max(1, hit - 30),
+                        end_line: Math.min(lines.length, hit + 120)
+                      },
                       snippet: lines[i].trim().slice(0, 160)
                     });
                     if (matches.length >= maxResults) break;

@@ -276,6 +276,13 @@ fn kill_process_group(child: &mut Child) {
     let _ = child.wait();
 }
 
+#[tauri::command]
+async fn pick_folder(_window: tauri::Window) -> Result<Option<String>, String> {
+    // Native folder selection is delegated to the backend (`choose_folder`),
+    // which uses zenity/kdialog on Linux, osascript on macOS, and PowerShell on Windows.
+    Ok(None)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -386,7 +393,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![greet, set_app_theme, open_url, read_ws_token, get_backend_port, place_embedded_browser])
+        .invoke_handler(tauri::generate_handler![greet, set_app_theme, open_url, read_ws_token, get_backend_port, place_embedded_browser, pick_folder])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

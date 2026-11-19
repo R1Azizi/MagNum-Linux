@@ -18,6 +18,7 @@ interface LeftSidebarProps {
   recentWorkspaces: string[];
   onNewChat: () => void;
   onOpenFolder: () => void;
+  onBrowseInApp?: () => void;
   onOpenWorkspace: (path: string) => void;
   onStartScratch: () => void;
   onOpenFilters: () => void;
@@ -40,7 +41,7 @@ const navBtn: React.CSSProperties = {
 
 export const LeftSidebar: React.FC<LeftSidebarProps> = ({
   activeWorkspace, sessions, currentSessionId, recentWorkspaces,
-  onNewChat, onOpenFolder, onOpenWorkspace, onStartScratch, onOpenFilters,
+  onNewChat, onOpenFolder, onBrowseInApp, onOpenWorkspace, onStartScratch, onOpenFilters,
   onLoadSession, onDeleteSession, onDiagnose, onToggleSidebar
 }) => {
   const [popoverAnchor, setPopoverAnchor] = useState<{ top: number; left: number } | null>(null);
@@ -249,6 +250,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
         onSelect={onOpenWorkspace}
         onScratch={onStartScratch}
         onOpenFolder={onOpenFolder}
+        onBrowseInApp={onBrowseInApp}
       />
 
 

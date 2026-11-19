@@ -551,6 +551,89 @@ class GeminiDriver {
     }
   }
   
+  // ★ Real file upload to AI Studio — selectors from live DOM
+  async uploadFiles(filePaths = []) {
+    if (!this.page || this.page.isClosed() || !filePaths.length) return;
+    try {
+      let input = this.page.locator('input[data-test-upload-file-input], ms-add-media-button input[type="file"]').first();
+      if (!(await input.count().catch(() => 0))) {
+        const addBtn = this.page.locator('button[data-test-id="add-media-button"], ms-add-media-button button').first();
+        if (await addBtn.isVisible({ timeout: 800 }).catch(() => false)) {
+          await addBtn.click().catch(() => {});
+          await this.page.waitForTimeout(500);
+          await this.page.keyboard.press('Escape').catch(() => {});
+        }
+        input = this.page.locator('input[type="file"][multiple]').first();
+      }
+      if (!(await input.count().catch(() => 0))) {
+        console.warn('⚠️ Gemini: file input not found — upload skipped.');
+        return;
+      }
+      console.log(`📤 Uploading ${filePaths.length} file(s) to Gemini (AI Studio)...`);
+      await input.setInputFiles(filePaths);
+      await this._waitForMediaReady(filePaths.length);
+    } catch (err) {
+      console.warn('⚠️ Gemini upload warning:', err.message);
+    }
+  }
+
+  // ★ Wait until media processing completes (token-count appears, no has-error)
+  async _waitForMediaReady(expectedNewFiles = 1) {
+    const deadline = Date.now() + Math.min(180000, 20000 + expectedNewFiles * 60000);
+    let stable = 0;
+    while (Date.now() < deadline) {
+      if (!this.page || this.page.isClosed()) return;
+      const st = await this.page.evaluate(() => {
+        const chips = Array.from(document.querySelectorAll(
+          '.prompt-media-item-container, [data-test-id="prompt-media-container"]'
+        ));
+        return {
+          total: chips.length,
+          errors: chips.filter(c => c.classList.contains('has-error')).length,
+          ready: chips.filter(c =>
+            !c.classList.contains('has-error') &&
+            !!c.querySelector('[data-test-id="token-count"]')
+          ).length
+        };
+      }).catch(() => null);
+      if (st) {
+        if (st.errors > 0) throw new Error('AI Studio rejected the attached file (media chip shows an error).');
+        if (st.total > 0 && st.ready === st.total) {
+          stable++;
+          if (stable >= 2) {
+            console.log(`✅ Gemini media processed & ready (${st.ready}/${st.total}).`);
+            return;
+          }
+        } else stable = 0;
+      }
+      await this.page.waitForTimeout(600);
+    }
+    console.warn('⚠️ Gemini media not fully processed before timeout — continuing anyway.');
+  }
+
+  // ★ Remove media chips (all, or only the given names)
+  async clearStagedMedia(names = null) {
+    if (!this.page || this.page.isClosed()) return;
+    try {
+      for (let i = 0; i < 20; i++) {
+        const removed = await this.page.evaluate((wantNames) => {
+          const chips = Array.from(document.querySelectorAll(
+            '.prompt-media-item-container, [data-test-id="prompt-media-container"]'
+          ));
+          for (const chip of chips) {
+            const name = (chip.querySelector('.name')?.textContent || '').trim();
+            if (wantNames && !wantNames.includes(name)) continue;
+            const btn = chip.querySelector('button[aria-label="Remove media"], .actions-container button');
+            if (btn) { btn.click(); return true; }
+          }
+          return false;
+        }, names).catch(() => false);
+        if (!removed) break;
+        await this.page.waitForTimeout(300);
+      }
+    } catch (e) { console.warn('Gemini clearStagedMedia warning:', e.message); }
+  }
+
   async startNewChat() {
     if (!this.page || this.page.isClosed()) return false;
     try {

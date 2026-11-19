@@ -57,6 +57,7 @@ function ensureSchema() {
       skill      TEXT,
       edits      TEXT,
       files      TEXT,
+      attachments TEXT,
       ts         INTEGER NOT NULL DEFAULT 0,
       timestamp  TEXT,
       FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -70,6 +71,13 @@ function ensureSchema() {
     db.prepare('SELECT provider FROM sessions LIMIT 1').get();
   } catch {
     try { db.exec('ALTER TABLE sessions ADD COLUMN provider TEXT'); } catch {}
+  }
+
+  // ── Migration: add attachments column for existing DBs ──
+  try {
+    db.prepare('SELECT attachments FROM messages LIMIT 1').get();
+  } catch {
+    try { db.exec('ALTER TABLE messages ADD COLUMN attachments TEXT'); } catch {}
   }
 }
 
@@ -87,6 +95,7 @@ function rowToMessage(r) {
     skill: r.skill || undefined,
     edits: r.edits ? safeParse(r.edits) : undefined,
     files: r.files ? safeParse(r.files) : undefined,
+    attachments: r.attachments ? safeParse(r.attachments) : undefined,
     isError: false,
     ts: r.ts,
     timestamp: r.timestamp || undefined
@@ -240,8 +249,9 @@ class SessionStore {
     if (!meta) return null;
     const payload = { ...message };
     if (typeof payload.ts !== 'number') payload.ts = Date.now();
-    if (typeof payload.text === 'string' && payload.text.length > 50000) {
-      payload.text = payload.text.slice(0, 50000) + '\n... [truncated for storage]';
+    const MAX_STORED_TEXT = 70000; // must be greater than the input cap (65000)
+    if (typeof payload.text === 'string' && payload.text.length > MAX_STORED_TEXT) {
+      payload.text = payload.text.slice(0, MAX_STORED_TEXT) + '\n... [truncated for storage]';
     }
     if (typeof payload.thought === 'string' && payload.thought.length > 10000) {
       payload.thought = payload.thought.slice(0, 10000) + '...';
@@ -255,9 +265,14 @@ class SessionStore {
         status: h.status
       }));
     }
+    if (Array.isArray(payload.attachments)) {
+      payload.attachments = payload.attachments.slice(0, 10).map(a => ({
+        id: a.id, name: a.name, size: a.size, type: a.type, file: a.file
+      }));
+    }
     const now = new Date().toISOString();
     const info = db.prepare(
-      'INSERT INTO messages (session_id, role, text, thought, action, skill, edits, files, ts, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?)'
+      'INSERT INTO messages (session_id, role, text, thought, action, skill, edits, files, attachments, ts, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
     ).run(
       sessionId,
       payload.role || 'agent',
@@ -267,6 +282,7 @@ class SessionStore {
       payload.skill ?? null,
       Array.isArray(payload.edits) ? JSON.stringify(payload.edits) : null,
       Array.isArray(payload.files) ? JSON.stringify(payload.files) : null,
+      Array.isArray(payload.attachments) ? JSON.stringify(payload.attachments) : null,
       payload.ts,
       payload.timestamp ?? null
     );

@@ -2,6 +2,20 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ChatMessage, FileNode, SessionMeta, RightPanelTab, Attachment, EditSummary, EditDetail } from '../types';
 import { embeddedBrowser } from '../utils/embeddedBrowser';
+import {
+  bindAttachmentSender, stageAttachments as stageAtts,
+  unstageAttachment as unstageAtt, onLiveAttachmentsChange
+} from '../utils/attachmentStaging';
+
+const PROVIDER_IDS = ['deepseek', 'gemini', 'chatgpt'] as const;
+type ProviderId = typeof PROVIDER_IDS[number];
+function readDefaultProvider(): ProviderId {
+  const saved = localStorage.getItem('magnum_default_provider') as ProviderId | null;
+  return saved && PROVIDER_IDS.includes(saved) ? saved : 'deepseek';
+}
+function readDeepThinkDefault(): boolean {
+  return localStorage.getItem('magnum_deepseek_deepthink') !== '0';
+}
 
 
 export async function getBackendPort(): Promise<number> {
@@ -43,6 +57,11 @@ async function getWsToken(port: number): Promise<string> {
 
 export function useMagNumSocket(onOpenRightTab: (tab: RightPanelTab) => void) {
   const [ws, setWs] = useState<WebSocket | null>(null);
+  const sendActionRef = useRef<(action: string, payload?: Record<string, any>) => void>(() => {});
+  useEffect(() => {
+    bindAttachmentSender((action, payload) => sendActionRef.current(action, payload));
+    return () => bindAttachmentSender(null);
+  }, []);
   const [accountInfo, setAccountInfo] = useState<{ isLoggedIn: boolean; email?: string }>({ isLoggedIn: false });
   const [activeWorkspace, setActiveWorkspace] = useState<string>('');
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
@@ -56,14 +75,21 @@ const lastErrorRef = useRef<{ text: string; ts: number }>({ text: '', ts: 0 });
   const [isRunning, setIsRunning] = useState(false);
   const [agentStatus, setAgentStatus] = useState<string>('');
 const [networkRetry, setNetworkRetry] = useState<{ attempt: number; max: number } | null>(null);
-  const [isDeepThink, setIsDeepThink] = useState(true);
-  const [selectedProvider, setSelectedProvider] = useState<'deepseek' | 'gemini'>('deepseek');
+  const [isDeepThink, setIsDeepThink] = useState(readDeepThinkDefault);
+  const [selectedProvider, setSelectedProvider] = useState<ProviderId>(readDefaultProvider);
+  const [defaultProvider, setDefaultProviderState] = useState<ProviderId>(readDefaultProvider);
   const [geminiThinking, setGeminiThinkingLevel] = useState<'low' | 'medium' | 'high'>(() => {
     const saved = localStorage.getItem('magnum_gemini_thinking');
     return saved === 'low' || saved === 'high' ? saved : 'medium';
   });
   const geminiThinkingRef = useRef(geminiThinking);
   useEffect(() => { geminiThinkingRef.current = geminiThinking; }, [geminiThinking]);
+  const [chatgptThink, setChatgptThinkState] = useState<boolean>(() => {
+    const saved = localStorage.getItem('magnum_chatgpt_think');
+    return saved === null ? true : saved === '1';
+  });
+  const chatgptThinkRef = useRef(chatgptThink);
+  useEffect(() => { chatgptThinkRef.current = chatgptThink; }, [chatgptThink]);
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [pendingPatches, setPendingPatches] = useState<EditSummary[]>([]);
@@ -73,7 +99,7 @@ const [networkRetry, setNetworkRetry] = useState<{ attempt: number; max: number 
   const [totalMessageCount, setTotalMessageCount] = useState(0);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
-  const [providersStatus, setProvidersStatus] = useState<{ deepseek: 'disconnected' | 'connecting' | 'connected'; gemini: 'disconnected' | 'connecting' | 'connected' }>({ deepseek: 'disconnected', gemini: 'disconnected' });
+  const [providersStatus, setProvidersStatus] = useState<{ deepseek: 'disconnected' | 'connecting' | 'connected'; gemini: 'disconnected' | 'connecting' | 'connected'; chatgpt: 'disconnected' | 'connecting' | 'connected' }>({ deepseek: 'disconnected', gemini: 'disconnected', chatgpt: 'disconnected' });
   const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>([]);
   const [terminalLogs, setTerminalLogs] = useState<{ line: string; kind: string; ts: number }[]>([]);
   const [patchHistory, setPatchHistory] = useState<{ file: string; success: boolean; message?: string; ts: number }[]>([]);
@@ -82,6 +108,9 @@ const [networkRetry, setNetworkRetry] = useState<{ attempt: number; max: number 
   const pushTerm = (l: any) => setTermLines(prev => { const n = [...prev, l]; return n.length > 2000 ? n.slice(n.length - 2000) : n; });
   const [revertedEditIds, setRevertedEditIds] = useState<number[]>([]);
   const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
+  const [folderPickerOpen, setFolderPickerOpen] = useState(false);
+  const [folderPickerNotice, setFolderPickerNotice] = useState('');
+  const browsePending = useRef(new Map<string, (d: any) => void>());
   const selectedFileNameRef = useRef(selectedFileName);
 const currentSessionIdRef = useRef<string | null>(currentSessionId);
 
@@ -99,6 +128,19 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
     let disposed = false; 
     let wsToken: string = '';
     let port: number = 5454;
+
+    const resolveAtts = (msgs: ChatMessage[]): ChatMessage[] => msgs.map(m => {
+      if (!Array.isArray(m.attachments) || m.attachments.length === 0) return m;
+      return {
+        ...m,
+        attachments: m.attachments.map(a =>
+          (a.base64 || a.url || !a.file) ? a : {
+            ...a,
+            url: `http://127.0.0.1:${port}/api/attachment?file=${encodeURIComponent(a.file!)}&token=${encodeURIComponent(wsToken)}`
+          }
+        )
+      };
+    });
 
     const initializeAndConnect = async () => {
       try {
@@ -120,7 +162,13 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
       socket.onopen = () => {
         retries = 0;
         const lang = localStorage.getItem('magnum_lang') === 'fa' ? 'fa' : 'en';
+        const savedDefault = localStorage.getItem('magnum_default_provider');
+        const defProvider = savedDefault === 'chatgpt' || savedDefault === 'gemini' ? savedDefault : 'deepseek';
+        socket?.send(JSON.stringify({ action: 'set_default_provider', provider: defProvider }));
         socket?.send(JSON.stringify({ action: 'set_language', lang }));
+        socket?.send(JSON.stringify({ action: 'set_chatgpt_think', enabled: localStorage.getItem('magnum_chatgpt_think') !== '0' }));
+        socket?.send(JSON.stringify({ action: 'set_deep_think', enabled: localStorage.getItem('magnum_deepseek_deepthink') !== '0' }));
+        socket?.send(JSON.stringify({ action: 'set_thinking_level', level: localStorage.getItem('magnum_gemini_thinking') || 'medium' }));
         socket?.send(JSON.stringify({ action: 'get_sessions' }));
         socket?.send(JSON.stringify({ action: 'get_terminal_logs' }));
         socket?.send(JSON.stringify({ action: 'get_recent_workspaces' }));
@@ -166,9 +214,9 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
             break;
           case 'session_loaded':
             setCurrentSessionId(data.session?.id || null);
-            setMessages(data.session?.messages || []);
+            setMessages(resolveAtts(data.session?.messages || []));
             if (data.session?.provider) {
-              setSelectedProvider(data.session.provider === 'gemini' ? 'gemini' : 'deepseek');
+              setSelectedProvider(data.session.provider === 'gemini' ? 'gemini' : data.session.provider === 'chatgpt' ? 'chatgpt' : 'deepseek');
             }
             setPendingPatches([]);
             setPendingCommand(null);
@@ -359,10 +407,11 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
           case 'login_browser_opened':
             setAgentStatus(data.message || 'Browser window is open.');
             if (data.provider === 'gemini') setProvidersStatus(p => ({ ...p, gemini: 'connecting' }));
+            else if (data.provider === 'chatgpt') setProvidersStatus(p => ({ ...p, chatgpt: 'connecting' }));
             else { setProvidersStatus(p => ({ ...p, deepseek: 'connecting' })); setConnectionStatus('connecting'); }
             break;
           case 'providers_status':
-            setProvidersStatus({ deepseek: data.deepseek || 'disconnected', gemini: data.gemini || 'disconnected' });
+            setProvidersStatus({ deepseek: data.deepseek || 'disconnected', gemini: data.gemini || 'disconnected', chatgpt: data.chatgpt || 'disconnected' });
             break;
           case 'gemini_logged_in':
             setProvidersStatus(p => ({ ...p, gemini: 'connected' }));
@@ -370,10 +419,20 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
           case 'gemini_logged_out':
             setProvidersStatus(p => ({ ...p, gemini: 'disconnected' }));
             break;
+          case 'chatgpt_logged_in':
+            setProvidersStatus(p => ({ ...p, chatgpt: 'connected' }));
+            break;
+          case 'chatgpt_logged_out':
+            setProvidersStatus(p => ({ ...p, chatgpt: 'disconnected' }));
+            break;
+          case 'chatgpt_think_status':
+            setChatgptThinkState(Boolean(data.enabled));
+            localStorage.setItem('magnum_chatgpt_think', data.enabled ? '1' : '0');
+            break;
           case 'older_messages_loaded':
             setIsLoadingOlder(false);
             setMessages(prev => {
-              const older = Array.isArray(data.session?.messages) ? data.session.messages : [];
+              const older = resolveAtts(Array.isArray(data.session?.messages) ? data.session.messages : []);
               const existing = new Set(prev.map(m => m.id));
               const toPrepend = older.filter((m: any) => !existing.has(m.id));
               return [...toPrepend, ...prev];
@@ -412,6 +471,18 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
             if (okIds.length) setRevertedEditIds(prev => Array.from(new Set([...prev, ...okIds])));
             break;
           }
+          case 'folder_dialog_failed':
+            setFolderPickerNotice(typeof data.message === 'string' ? data.message : '');
+            setFolderPickerOpen(true);
+            break;
+          case 'dir_listing': {
+            const pending = browsePending.current.get(data.requestId);
+            if (pending) {
+              browsePending.current.delete(data.requestId);
+              pending(data);
+            }
+            break;
+          }
         }
       };
       socket.onclose = () => {
@@ -444,6 +515,25 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
     }
   }, [ws]);
 
+  useEffect(() => { sendActionRef.current = sendAction; }, [sendAction]);
+
+  const stageAttachments = useCallback((attachments: Attachment[]) => {
+    stageAtts(selectedProvider, attachments);
+  }, [selectedProvider]);
+
+  const unstageAttachment = useCallback((id: string) => {
+    unstageAtt(selectedProvider, id);
+  }, [selectedProvider]);
+
+  const liveAttsRef = useRef<Attachment[]>([]);
+  useEffect(() => onLiveAttachmentsChange(atts => { liveAttsRef.current = atts; }), []);
+  const lastStageProviderRef = useRef(selectedProvider);
+  useEffect(() => {
+    if (lastStageProviderRef.current === selectedProvider) return;
+    lastStageProviderRef.current = selectedProvider;
+    if (liveAttsRef.current.length) stageAtts(selectedProvider, liveAttsRef.current);
+  }, [selectedProvider]);
+
   const openWorkspace = useCallback((path: string) => {
     sendAction('open_workspace', { path });
   }, [sendAction]);
@@ -460,6 +550,25 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
     setGeminiThinkingLevel(level);
     localStorage.setItem('magnum_gemini_thinking', level);
     sendAction('set_thinking_level', { level });
+  }, [sendAction]);
+
+  const setChatgptThink = useCallback((enabled: boolean) => {
+    setChatgptThinkState(enabled);
+    localStorage.setItem('magnum_chatgpt_think', enabled ? '1' : '0');
+    sendAction('set_chatgpt_think', { enabled });
+  }, [sendAction]);
+
+  const setDefaultProvider = useCallback((p: ProviderId) => {
+    setDefaultProviderState(p);
+    localStorage.setItem('magnum_default_provider', p);
+    setSelectedProvider(p);
+    sendAction('set_default_provider', { provider: p });
+  }, [sendAction]);
+
+  const setDeepThink = useCallback((enabled: boolean) => {
+    setIsDeepThink(enabled);
+    localStorage.setItem('magnum_deepseek_deepthink', enabled ? '1' : '0');
+    sendAction('set_deep_think', { enabled });
   }, [sendAction]);
 
   const sendPrompt = useCallback((
@@ -500,6 +609,7 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
       prompt: promptText,
       provider: selectedProvider,
       thinkingLevel: geminiThinkingRef.current,
+      chatgptThink: chatgptThinkRef.current,
       deepThink: isDeepThink,
       autoApplyPatch,
       autoApproveCommand,
@@ -522,6 +632,22 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
   const sendTerminalInterrupt = useCallback(() => sendAction('terminal_interrupt'), [sendAction]);
   const sendTerminalRestart = useCallback(() => sendAction('terminal_restart'), [sendAction]);
 
+  const browseDir = useCallback((dirPath?: string): Promise<any> => {
+    return new Promise((resolve) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        resolve({ path: dirPath || '', parent: null, entries: [], error: 'Engine disconnected' });
+        return;
+      }
+      const requestId = Math.random().toString(36).slice(2, 10);
+      const timer = setTimeout(() => {
+        browsePending.current.delete(requestId);
+        resolve({ path: dirPath || '', parent: null, entries: [], error: 'Timeout' });
+      }, 15000);
+      browsePending.current.set(requestId, (d: any) => { clearTimeout(timer); resolve(d); });
+      ws.send(JSON.stringify({ action: 'browse_dir', path: dirPath || '', requestId }));
+    });
+  }, [ws]);
+
   return {
     accountInfo,
     activeWorkspace,
@@ -537,6 +663,9 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
     setIsDeepThink,
     selectedProvider,
     setSelectedProvider,
+    defaultProvider,
+    setDefaultProvider,
+    setDeepThink,
     sessions,
     currentSessionId,
     pendingPatches,
@@ -550,9 +679,13 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
     providersStatus,
     geminiThinking,
     setGeminiThinking,
+    chatgptThink,
+    setChatgptThink,
     recentWorkspaces,
     sendAction,
     sendPrompt,
+    stageAttachments,
+    unstageAttachment,
     loadSession,
     openWorkspace,
     hasMoreMessages,
@@ -567,6 +700,11 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
     termCwd,
     sendTerminalInput,
     sendTerminalInterrupt,
-    sendTerminalRestart
+    sendTerminalRestart,
+    folderPickerOpen,
+    setFolderPickerOpen,
+    folderPickerNotice,
+    setFolderPickerNotice,
+    browseDir,
   };
 }

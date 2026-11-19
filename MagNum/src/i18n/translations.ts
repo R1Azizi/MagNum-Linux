@@ -60,12 +60,14 @@ export const translations = {
     toolCreate: 'Created',
     toolCommand: 'Ran',
     toolListDir: 'Listed',
-    toolContinue: 'Receiving files',
+    toolContinue: 'Next 1000 lines',
     toolBrowse: 'Browsed',
     toolReadPage: 'Read page',
     networkRetryWarn: 'Network error — retrying',
     thinkingLevelSetting: 'Thinking Level (Gemini)',
-    thinkingLevelDesc: 'Reasoning depth for Gemini answers. Default: Medium. The pill in the chat box cycles it quickly.'
+    thinkingLevelDesc: 'Reasoning depth for Gemini answers. Default: Medium. The pill in the chat box cycles it quickly.',
+    thinkChatgptSetting: 'Think (ChatGPT)',
+    thinkChatgptDesc: 'Extended reasoning via the Think toggle. Always ON by default for reliable engineering answers.'
   },
   fa: {
     back: 'بازگشت',
@@ -127,11 +129,13 @@ export const translations = {
     toolCreate: 'ساخت',
     toolCommand: 'اجرا',
     toolListDir: 'فهرست‌گیری',
-    toolContinue: 'دریافت فایل‌ها',
+    toolContinue: '۱۰۰۰ خط بعدی',
     toolBrowse: 'مرور کرد',
     toolReadPage: 'خواندن صفحه',
     networkRetryWarn: 'خطای شبکه — تلاش مجدد',
     thinkingLevelSetting: 'سطح استدلال (Gemini)',
-    thinkingLevelDesc: 'عمق استدلال مدل جمنای؛ پیشفرض: Medium. با کلیک روی پیل داخل چتباکس سریع تغییر میکند.'
+    thinkingLevelDesc: 'عمق استدلال مدل جمنای؛ پیشفرض: Medium. با کلیک روی پیل داخل چتباکس سریع تغییر می‌کند.',
+    thinkChatgptSetting: 'Think (ChatGPT)',
+    thinkChatgptDesc: 'استدلال عمیق با کلید Think؛ به‌صورت پیش‌فرض همیشه روشن است و با کلیک روی پیل داخل چت‌باکس خاموش/روشن می‌شود.'
   }
 };

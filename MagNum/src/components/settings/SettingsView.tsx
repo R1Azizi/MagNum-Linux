@@ -8,24 +8,29 @@ import {
   Globe, 
   Code, 
   BookOpen, 
-  Check,
+
   ExternalLink,
   Bot
 } from 'lucide-react';
 import { Language, translations } from '../../i18n/translations';
 import { alertDialog } from '../modals/AppDialog';
 import { NethersLogo } from '../shared/NethersLogo';
+import { ModelsSettings } from './ModelsSettings';
+import { ProviderId } from '../shared/ProviderLogo';
 
 interface SettingsViewProps {
-  provider?: 'deepseek' | 'gemini';
+  defaultProvider: ProviderId;
+  onDefaultProviderChange: (p: ProviderId) => void;
   geminiThinking?: 'low' | 'medium' | 'high';
   onGeminiThinkingChange?: (level: 'low' | 'medium' | 'high') => void;
+  chatgptThink?: boolean;
+  onChatgptThinkChange?: (enabled: boolean) => void;
   currentLang: Language;
   onLanguageChange: (lang: Language) => void;
-currentTheme: 'dark' | 'light';
-onThemeChange: (theme: 'dark' | 'light') => void;
+  currentTheme: 'dark' | 'light';
+  onThemeChange: (theme: 'dark' | 'light') => void;
   isDeepThink: boolean;
-  onToggleDeepThink: () => void;
+  onDeepThinkChange: (enabled: boolean) => void;
   autoApplyPatch: boolean;
   onToggleAutoPatch: () => void;
   requireCommandApproval: boolean;
@@ -36,15 +41,18 @@ onThemeChange: (theme: 'dark' | 'light') => void;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
-  provider,
+  defaultProvider,
+  onDefaultProviderChange,
   geminiThinking,
   onGeminiThinkingChange,
+  chatgptThink = true,
+  onChatgptThinkChange,
   currentLang,
   onLanguageChange,
   currentTheme,
   onThemeChange,
   isDeepThink,
-  onToggleDeepThink,
+  onDeepThinkChange,
   autoApplyPatch,
   onToggleAutoPatch,
   requireCommandApproval,
@@ -542,7 +550,20 @@ background: 'var(--bg-surface)',
 )}
 
         {activeCategory === 'models' && (
-          <>
+          <ModelsSettings
+            lang={currentLang}
+            defaultProvider={defaultProvider}
+            onDefaultProviderChange={onDefaultProviderChange}
+            deepThink={isDeepThink}
+            onDeepThinkChange={onDeepThinkChange}
+            geminiThinking={geminiThinking || 'medium'}
+            onGeminiThinkingChange={(lv) => onGeminiThinkingChange && onGeminiThinkingChange(lv)}
+            chatgptThink={chatgptThink !== false}
+            onChatgptThinkChange={(en) => onChatgptThinkChange && onChatgptThinkChange(en)}
+          />
+        )}
+
+        {/*
             <h2 style={{ fontSize: '18px', fontWeight: 700 }}>{t.models}</h2>
 
             <div style={{
@@ -580,7 +601,20 @@ background: 'var(--bg-surface)',
                 <Check size={16} color="var(--accent-green)" />
               </div>
 
-              {provider !== 'gemini' ? (
+              <div style={{ padding:'14px', background:'rgba(16,163,127,0.05)', border:'1px solid rgba(16,163,127,0.3)', borderRadius:8, display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                <div>
+                  <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                    <span style={{ fontSize:13, fontWeight:700, color:'#10a37f' }}>ChatGPT (OpenAI)</span>
+                    <span style={{ background:'#10a37f', color:'#fff', fontSize:9, fontWeight:800, padding:'2px 6px', borderRadius:4 }}>WEB</span>
+                  </div>
+                  <div style={{ fontSize:11, color:'var(--text-muted)', marginTop:4 }}>
+                    Autonomous engineering via your own ChatGPT account — Think levels supported.
+                  </div>
+                </div>
+                {provider === 'chatgpt' && <Check size={16} color="#10a37f" />}
+              </div>
+
+              {provider === 'deepseek' ? (
                 <div style={{
                   padding: '14px',
                   background: 'rgba(255, 255, 255, 0.02)',
@@ -603,7 +637,7 @@ background: 'var(--bg-surface)',
                     style={{ width: '16px', height: '16px', accentColor: 'var(--accent-green)', cursor: 'pointer' }} 
                   />
                 </div>
-              ) : (
+              ) : provider === 'gemini' ? (
                 <div style={{ padding: '14px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-subtle)', borderRadius: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
                     <div style={{ fontSize: '13px', fontWeight: 700 }}>{t.thinkingLevelSetting}</div>
@@ -623,11 +657,24 @@ background: 'var(--bg-surface)',
                     ))}
                   </div>
                 </div>
+              ) : (
+                <div style={{ padding: '14px', background: 'rgba(255,255,255,0.02)', border: '1px solid var(--border-subtle)', borderRadius: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontSize: '13px', fontWeight: 700 }}>{t.thinkChatgptSetting}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>{t.thinkChatgptDesc}</div>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={chatgptThink !== false}
+                    onChange={(e) => onChatgptThinkChange && onChatgptThinkChange(e.target.checked)}
+                    style={{ width: '16px', height: '16px', accentColor: '#10a37f', cursor: 'pointer' }}
+                  />
+                </div>
               )}
 
             </div>
           </>
-        )}
+        */}
 
       </main>
     </div>

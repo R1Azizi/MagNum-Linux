@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Plus, ArrowUp, RefreshCw, Square, Sparkles, X, FileText, Globe, MonitorOff } from 'lucide-react';
+import { Plus, ArrowUp, RefreshCw, Square, Sparkles, Globe, MonitorOff, Brain } from 'lucide-react';
 import { Attachment } from '../../types';
 import { alertDialog } from '../modals/AppDialog';
+import { AttachmentPreview } from '../shared/AttachmentViews';
+import { stageAttachments as stageToProvider, unstageAttachment, trackComposerAttachments } from '../../utils/attachmentStaging';
 
 interface ChatInputBarProps {
   isRunning: boolean;
@@ -10,9 +12,11 @@ interface ChatInputBarProps {
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
   onOpenFolder: () => void;
-  provider?: 'deepseek' | 'gemini';
+  provider?: 'deepseek' | 'gemini' | 'chatgpt';
   geminiThinking?: 'low' | 'medium' | 'high';
   onCycleThinking?: () => void;
+  chatgptThink?: boolean;
+  onToggleChatgptThink?: () => void;
   onShowBrowser?: () => void;
   onHideBrowser?: () => void;
 }
@@ -20,6 +24,8 @@ interface ChatInputBarProps {
 const MAX_ATTACHMENTS = 10;
 const MAX_FILE_SIZE = 100 * 1024 * 1024; 
 const MAX_TOTAL_SIZE = 300 * 1024 * 1024; 
+const MAX_MESSAGE_CHARS = 65000;
+const CHAR_COUNTER_AT = Math.floor(MAX_MESSAGE_CHARS * 0.9); // 58500
 
 export const ChatInputBar: React.FC<ChatInputBarProps> = ({
   isRunning,
@@ -30,6 +36,8 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
   provider,
   geminiThinking,
   onCycleThinking,
+  chatgptThink = true,
+  onToggleChatgptThink,
   onShowBrowser,
   onHideBrowser
 }) => {
@@ -47,6 +55,13 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 180)}px`;
   }, [val]);
+
+  useEffect(() => {
+    trackComposerAttachments(attachments);
+    if (attachments.length > 0) {
+      stageToProvider(provider ?? 'deepseek', attachments);
+    }
+  }, [attachments, provider]);
 
   
   const addFiles = (files: FileList | File[]) => {
@@ -174,18 +189,15 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
           boxShadow: 'var(--shadow-input)'
         }}>
         {attachments.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, padding: '2px 4px', alignItems: 'center' }}>
-            {attachments.map((att) => (
-              <div key={att.id} style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 6, padding: '3px 8px', fontSize: 11, color: 'var(--text-main)', maxWidth: 200 }}>
-                {att.type.startsWith('image/') ? (
-                  <img src={att.base64} alt={att.name} style={{ width: 16, height: 16, borderRadius: 3, objectFit: 'cover' }} />
-                ) : (
-                  <FileText size={14} color="var(--accent-green)" />
-                )}
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{att.name}</span>
-                <X size={12} style={{ cursor: 'pointer', color: 'var(--diff-del-text)' }} onClick={() => setAttachments(prev => prev.filter(a => a.id !== att.id))} />
-              </div>
-            ))}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, padding: '6px 6px 4px', alignItems: 'center' }}>
+            <AttachmentPreview
+              attachments={attachments}
+              variant="composer"
+              onRemove={(id) => {
+                setAttachments(prev => prev.filter(a => a.id !== id));
+                unstageAttachment(provider ?? 'deepseek', id);
+              }}
+            />
             <span style={{ fontSize: 10, color: 'var(--text-dim)', marginLeft: 'auto' }}>{attachments.length}/{MAX_ATTACHMENTS}</span>
           </div>
         )}
@@ -193,7 +205,8 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
           ref={inputRef}
           rows={1}
           value={val}
-          onChange={(e) => setVal(e.target.value)}
+          maxLength={MAX_MESSAGE_CHARS}
+          onChange={(e) => setVal(e.target.value.slice(0, MAX_MESSAGE_CHARS))}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           placeholder={isRunning
@@ -228,7 +241,12 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
             <Plus size={14} />
           </button>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            {provider !== 'gemini' && onToggleDeepThink && (
+            {val.length >= CHAR_COUNTER_AT && (
+              <span className="code-font" style={{ fontSize: 10, flexShrink: 0, color: val.length >= MAX_MESSAGE_CHARS ? 'var(--diff-del-text)' : 'var(--text-dim)' }}>
+                {val.length}/{MAX_MESSAGE_CHARS}
+              </span>
+            )}
+            {provider === 'deepseek' && onToggleDeepThink && (
               <button
                 onClick={onToggleDeepThink}
                 title={isDeepThink ? 'DeepThink reasoning is ON' : 'DeepThink reasoning is OFF'}
@@ -259,6 +277,21 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
               >
                 <Sparkles size={11} />
                 <span style={{ fontWeight: 600, textTransform: 'capitalize' }}>{geminiThinking || 'medium'}</span>
+              </button>
+            )}
+            {provider === 'chatgpt' && (
+              <button onClick={onToggleChatgptThink}
+                title={chatgptThink ? 'Think is ON (default) — extended reasoning' : 'Think is OFF — click to enable'}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 5, fontSize: 11,
+                  color: chatgptThink ? '#10a37f' : 'var(--text-muted)',
+                  padding: '3px 8px', borderRadius: 8,
+                  background: chatgptThink ? 'rgba(16,163,127,0.12)' : 'transparent',
+                  border: `1px solid ${chatgptThink ? 'rgba(16,163,127,0.4)' : 'var(--border-subtle)'}`,
+                  flexShrink: 0, cursor: 'pointer'
+                }}>
+                <Brain size={11} />
+                <span style={{ fontWeight: 600 }}>Think</span>
               </button>
             )}
             <div
@@ -313,7 +346,7 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
                   flexShrink: 0
                 }}
               >
-                <span style={{ fontWeight: 600 }}>{provider === 'gemini' ? 'Gemini' : 'DeepSeek'}</span>
+                <span style={{ fontWeight: 600 }}>{provider === 'gemini' ? 'Gemini' : provider === 'chatgpt' ? 'ChatGPT' : 'DeepSeek'}</span>
               </button>
             </div>
             {isRunning ? (
