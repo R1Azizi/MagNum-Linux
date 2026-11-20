@@ -21,6 +21,10 @@ fn get_free_ports() -> (u16, u16) {
         .map(|addr| addr.port())
         .unwrap_or(5454);
 
+    // NOTE: listeners are intentionally dropped here. server.js now retries the
+    // same port several times on EADDRINUSE before falling back to a dynamic
+    // port, which eliminates the previous race where another process grabbed
+    // the freshly-freed port and the UI hung waiting on a stale .backend-port.
     drop(listener_cdp);
     drop(listener_backend);
 

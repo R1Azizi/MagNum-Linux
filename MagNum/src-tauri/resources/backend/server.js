@@ -65,7 +65,9 @@ const ALLOWED_ORIGINS = [
   'tauri://localhost',
   'http://tauri.localhost',
   'http://localhost:1420',
-  'http://127.0.0.1:1420'
+  'http://127.0.0.1:1420',
+  'http://localhost:1430',
+  'http://127.0.0.1:1430'
 ];
 
 
@@ -125,6 +127,8 @@ async function scanWorkspaceTree(baseDir, currentRel = '', maxDepth = 6, ignored
   return result;
 }
 
+let backendListenAttempts = 0;
+const BACKEND_LISTEN_MAX_ATTEMPTS = 40; // ~40 * 250ms = up to 10s of retrying the SAME port
 const server = http.createServer();
 
 const wss = new WebSocketServer({ noServer: true, maxPayload: 500 * 1024 * 1024 }); 
@@ -152,7 +156,22 @@ process.on('uncaughtException', (e) => {
 });
 server.on('error', (e) => {
   if (e && e.code === 'EADDRINUSE') {
-    console.warn(`[WARN] Port ${PORT} already in use — retrying on dynamic port 0...`);
+    // Retry the SAME requested port before falling back to a dynamic port.
+    // This avoids the race where main.rs frees the port and a stale/zombie
+    // process briefly holds it, causing the app to pick a different port
+    // while the UI is still reading a stale .backend-port file.
+    if (backendListenAttempts < BACKEND_LISTEN_MAX_ATTEMPTS) {
+      backendListenAttempts++;
+      const delay = 250;
+      console.warn(`[WARN] Port ${PORT} busy (attempt ${backendListenAttempts}/${BACKEND_LISTEN_MAX_ATTEMPTS}) — retrying in ${delay}ms...`);
+      setTimeout(() => {
+        try { server.listen(PORT, '127.0.0.1'); } catch (err) {
+          console.error('[FATAL] listen retry threw:', err && err.message);
+        }
+      }, delay);
+      return;
+    }
+    console.warn(`[WARN] Port ${PORT} still in use after ${BACKEND_LISTEN_MAX_ATTEMPTS} attempts — falling back to dynamic port 0...`);
     server.listen(0, '127.0.0.1');
     return;
   }

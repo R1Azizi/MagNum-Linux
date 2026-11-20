@@ -233,6 +233,47 @@ fn get_backend_port(app_handle: tauri::AppHandle) -> Result<u16, String> {
         .and_then(|p| p.parse::<u16>().map_err(|e| e.to_string()))
 }
 
+/// Command that waits (up to ~10s) for `.backend-port` to appear, so the UI
+/// never reads a stale value while the freshly-spawned server is still binding.
+#[tauri::command]
+async fn wait_backend_port(app_handle: tauri::AppHandle) -> Result<u16, String> {
+    let data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .or_else(|_| {
+            if cfg!(target_os = "windows") {
+                std::env::var("APPDATA")
+                    .map(|appdata| std::path::PathBuf::from(appdata).join("MagNum"))
+                    .map_err(|e| e.to_string())
+            } else {
+                std::env::var("HOME")
+                    .map(|home| std::path::PathBuf::from(home).join(".magnum"))
+                    .map_err(|e| e.to_string())
+            }
+        })
+        .map_err(|e| format!("Failed to resolve data dir: {}", e))?;
+
+    let port_file = data_dir.join(".backend-port");
+    let fallback: u16 = std::env::var("MAGNUM_BACKEND_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(5454);
+
+    // Poll for up to ~10 seconds for the server to write a fresh port.
+    for _ in 0..50 {
+        if let Ok(content) = std::fs::read_to_string(&port_file) {
+            if let Ok(port) = content.trim().parse::<u16>() {
+                if port > 0 {
+                    return Ok(port);
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    Ok(fallback)
+}
+
 /// Resolve the node binary on non-Windows: MAGNUM_NODE, bundled `backend/node`, then PATH.
 #[cfg(not(windows))]
 fn resolve_node(backend_dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
@@ -393,7 +434,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![greet, set_app_theme, open_url, read_ws_token, get_backend_port, place_embedded_browser, pick_folder])
+        .invoke_handler(tauri::generate_handler![greet, set_app_theme, open_url, read_ws_token, get_backend_port, wait_backend_port, place_embedded_browser, pick_folder])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

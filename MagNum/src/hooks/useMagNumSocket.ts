@@ -19,6 +19,17 @@ function readDeepThinkDefault(): boolean {
 
 
 export async function getBackendPort(): Promise<number> {
+  // Prefer the blocking variant which waits for the freshly-spawned server
+  // to write .backend-port (avoids reading a stale value left by a previous
+  // run and hanging on a wrong/dead port).
+  try {
+    const port = await invoke<number>('wait_backend_port');
+    if (port && typeof port === 'number' && port > 0) {
+      return port;
+    }
+  } catch (err) {
+    console.warn('[backend-port] wait_backend_port failed, falling back:', err);
+  }
   try {
     const port = await invoke<number>('get_backend_port');
     if (port && typeof port === 'number' && port > 0) {
