@@ -1,0 +1,14 @@
+{
+  "experimental": {
+    "mcpServers": {
+      "magnum": {
+        "command": "node",
+        "args": [
+          "/ABSOLUTE/PATH/TO/MagNum/src-tauri/resources/backend/mcp-server.js",
+          "--workspace",
+          "/ABSOLUTE/PATH/TO/YOUR/PROJECT"
+        ]
+      }
+    }
+  }
+}

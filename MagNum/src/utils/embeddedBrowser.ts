@@ -29,7 +29,17 @@ class EmbeddedBrowserManager {
   }
 
   async ensure(): Promise<Webview> {
-    if (this.webview) return this.webview;
+    // Always re-validate the cached reference; the webview may have been closed
+    // (by user or by us) and reusing a dead reference causes silent failures.
+    if (this.webview) {
+      try {
+        // Probe: invoking an IPC method on a destroyed webview rejects.
+        await this.webview.setPosition(new LogicalPosition(0, 0));
+        return this.webview;
+      } catch {
+        this.webview = null;
+      }
+    }
 
     // بازیابی رفرنس وب‌ویو در صورت وجود
     try {
@@ -96,6 +106,7 @@ class EmbeddedBrowserManager {
       await wv.show().catch(() => {});
       this.isVisible = true;
     }
+    await this.injectPageSync();
   }
 
   async hide(): Promise<void> {
@@ -111,6 +122,41 @@ class EmbeddedBrowserManager {
     } catch (e) {
       console.warn('[embeddedBrowser] hide error:', e);
     }
+  }
+
+  /** Fully destroy the embedded webview (used when the browser panel closes). */
+  async close(): Promise<void> {
+    this.isVisible = false;
+    this.creating = null;
+    this.stopSyncLoop();
+    try {
+      if (!this.webview) {
+        const existing = await Webview.getByLabel('magnum-embedded-browser');
+        if (existing) this.webview = existing;
+      }
+      if (this.webview) {
+        await (this.webview as any).close?.().catch?.(() => {});
+      }
+    } catch (e) {
+      console.warn('[embeddedBrowser] close error:', e);
+    } finally {
+      this.webview = null;
+    }
+  }
+
+  /** Called when the panel opens: ensures a live webview and shows it. */
+  async reconnect(rect: EmbeddedRect): Promise<void> {
+    // If the cached webview is dead, close it defensively and rebuild.
+    if (this.webview) {
+      try {
+        await this.webview.setPosition(new LogicalPosition(0, 0));
+      } catch {
+        try { await (this.webview as any).close?.(); } catch {}
+        this.webview = null;
+      }
+    }
+    this.creating = null;
+    await this.showIn(rect);
   }
 
   buildUrl(input: string): string {
@@ -137,7 +183,8 @@ class EmbeddedBrowserManager {
         body: JSON.stringify({ action: 'navigate', url: this.activeUrl })
       });
       const data = await res.json();
-      if (data && data.ok) {
+      if (data && data.ok && data.via !== 'frontend') {
+        await this.injectPageSync();
         return;
       }
     } catch {}
@@ -172,6 +219,80 @@ class EmbeddedBrowserManager {
     }).catch(() => {});
     if (this.isVisible) {
       await newWv.show().catch(() => {});
+    }
+    await this.injectPageSync();
+  }
+
+  /**
+   * ★ Linux Tauri uses WebKitGTK, so the backend cannot CDP-attach to this
+   *   webview. Instead we inject a script that pushes (url, title, text) to
+   *   /api/browser-sync periodically — which the backend's `read_page` falls
+   *   back to whenever CDP is unavailable. This is what lets the agent "see"
+   *   the tab the user has opened in the panel.
+   */
+  private syncUnlisten: (() => void) | null = null;
+
+  /** Register a host-side listener for page snapshots emitted from the webview. */
+  private async ensureSyncListener(): Promise<void> {
+    if (this.syncUnlisten) return;
+    try {
+      const { listen } = await import('@tauri-apps/api/event');
+      const port = await this.getPort();
+      this.syncUnlisten = await listen<any>('magnum-page-sync', async (event) => {
+        const p = event.payload || {};
+        if (!p || typeof p.url !== 'string') return;
+        try {
+          await fetch(`http://127.0.0.1:${port}/api/browser-sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },
+            body: JSON.stringify({ url: p.url, title: p.title || '', text: p.text || '' })
+          });
+        } catch {}
+      });
+    } catch (e) {
+      console.warn('[embeddedBrowser] sync listener registration failed:', e);
+    }
+  }
+
+  private stopSyncLoop(): void {
+    if (this.syncUnlisten) { try { this.syncUnlisten(); } catch {} this.syncUnlisten = null; }
+  }
+
+  async injectPageSync(): Promise<void> {
+    if (!this.webview) return;
+    await this.ensureSyncListener();
+    const port = await this.getPort();
+    const js = `(function(){
+  if (window.__magnum_sync_started) return;
+  window.__magnum_sync_started = true;
+  var ENDPOINT = 'http://127.0.0.1:${port}/api/browser-sync';
+  function push() {
+    try {
+      var text = '';
+      if (document.body) {
+        text = document.body.innerText || '';
+        if (!text.trim()) {
+          var clone = document.body.cloneNode(true);
+          clone.querySelectorAll('script,style,noscript,svg,textarea').forEach(function(n){n.remove();});
+          text = (clone.textContent || '').replace(/[ \\t]+/g,' ').replace(/\\n{3,}/g,'\\n\\n').trim();
+        }
+      }
+      var payload = { url: location.href, title: document.title || '', text: text };
+      try {
+        navigator.sendBeacon(ENDPOINT, new Blob([JSON.stringify(payload)], { type: 'text/plain' }));
+      } catch (e) {
+        fetch(ENDPOINT, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) }).catch(function(){});
+      }
+    } catch (e) {}
+  }
+  push();
+  setInterval(push, 3000);
+  window.addEventListener('load', push);
+})();`;
+    try {
+      await (this.webview as any).eval(js);
+    } catch (e) {
+      console.warn('[embeddedBrowser] injectPageSync failed:', e);
     }
   }
 

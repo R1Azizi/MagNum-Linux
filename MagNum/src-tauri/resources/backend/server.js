@@ -590,16 +590,164 @@ server.on('request', async (req, res) => {
     return;
   }
 
+  // ── MCP over HTTP (Phase 2) ──────────────────────────────────────
+  if (req.method === 'POST' && req.url === '/mcp') {
+    let body = '';
+    req.on('data', c => { body += c; if (body.length > 4 * 1024 * 1024) { try { req.destroy(); } catch {} } });
+    req.on('end', async () => {
+      let msg;
+      try { msg = JSON.parse(body || '{}'); }
+      catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }));
+        return;
+      }
+      const reply = async (payload, status = 200) => {
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(payload));
+      };
+      try {
+        if (!currentTools) return reply({ jsonrpc: '2.0', id: msg.id ?? null, error: { code: -32001, message: 'No workspace loaded. Open a project in MagNum first.' } });
+        const mcp = require('./mcp-tools');
+        if (msg.method === 'initialize') {
+          return reply({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'magnum', version: '1.0.0', workspace: currentTools.workspaceDir } } });
+        }
+        if (msg.method === 'notifications/initialized') { res.writeHead(204); return res.end(); }
+        if (msg.method === 'tools/list') {
+          return reply({ jsonrpc: '2.0', id: msg.id, result: { tools: mcp.TOOL_DEFS } });
+        }
+        if (msg.method === 'tools/call') {
+          const { name, arguments: args } = msg.params || {};
+          const result = await mcp.callTool(currentTools, name, args || {});
+          return reply({ jsonrpc: '2.0', id: msg.id, result });
+        }
+        if (msg.method === 'ping') return reply({ jsonrpc: '2.0', id: msg.id, result: {} });
+        return reply({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `Method not found: ${msg.method}` } });
+      } catch (err) {
+        return reply({ jsonrpc: '2.0', id: msg.id ?? null, error: { code: -32603, message: err.message || String(err) } });
+      }
+    });
+    return;
+  }
+
+  if (req.method === 'GET' && req.url === '/mcp/info') {
+    try {
+      const mcp = require('./mcp-tools');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        name: 'magnum',
+        version: '1.0.0',
+        transport: 'http-jsonrpc',
+        endpoint: '/mcp',
+        workspace: currentTools ? currentTools.workspaceDir : null,
+        toolCount: mcp.TOOL_DEFS.length,
+        tools: mcp.TOOL_DEFS.map(t => t.name)
+      }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // OpenAI-compatible shim (Phase 3)
+  if (req.method === "POST" && req.url === "/v1/chat/completions") {
+    let body = "";
+    req.on("data", c => { body += c; if (body.length > 4 * 1024 * 1024) { try { req.destroy(); } catch {} } });
+    req.on("end", async () => {
+      const reply = (p, st = 200) => { res.writeHead(st, { "Content-Type": "application/json" }); res.end(JSON.stringify(p)); };
+      let payload;
+      try { payload = JSON.parse(body || "{}"); } catch { return reply({ error: { message: "Invalid JSON", type: "invalid_request_error" } }, 400); }
+      try {
+        const mcp = require("./mcp-tools");
+        const openaiTools = mcp.TOOL_DEFS.map(t => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.inputSchema } }));
+        const mkUsage = (p, c) => ({ prompt_tokens: p || 0, completion_tokens: c || 0, total_tokens: (p || 0) + (c || 0) });
+        const mkId = () => "chatcmpl-magnum-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+        const now = () => Math.floor(Date.now() / 1000);
+        const messages = Array.isArray(payload.messages) ? payload.messages : [];
+        const last = messages.length ? messages[messages.length - 1] : null;
+
+        if (!currentTools) {
+          return reply({ error: { message: "No workspace loaded. Open a project in MagNum first.", type: "invalid_request_error" } }, 409);
+        }
+
+        // ── Native OpenAI tool-calling flow ──────────────────────────
+        // Client returns the assistant turn with tool_calls. We execute
+        // each one and reply with role:"tool" results, then a final
+        // assistant message. This makes /v1/chat/completions usable by
+        // any standard OpenAI SDK / Goddot without TOOL_CALL hacks.
+        if (last && last.role === "tool") {
+          // Collect the last assistant tool_calls that these tool results answer.
+          let assistantIdx = -1;
+          for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role === "assistant" && Array.isArray(messages[i].tool_calls) && messages[i].tool_calls.length) { assistantIdx = i; break; }
+          }
+          const calls = assistantIdx !== -1 ? messages[assistantIdx].tool_calls : [];
+          const results = [];
+          for (const call of calls) {
+            const fn = (call && call.function) || {};
+            const name = fn.name;
+            let args = {};
+            try { args = fn.arguments ? JSON.parse(fn.arguments) : {}; } catch (e) { args = {}; }
+            let text;
+            try {
+              const r = await mcp.callTool(currentTools, name, args);
+              text = (r && r.content && r.content[0] && r.content[0].text) || "";
+            } catch (e) {
+              text = "[ERROR] " + (e.message || String(e));
+            }
+            results.push({ role: "tool", tool_call_id: call.id || ("call_" + name), name, content: text });
+          }
+          const content = results.length
+            ? results.map(r => `[${r.name}]\n${r.content}`).join("\n\n")
+            : "No tool calls to execute.";
+          return reply({ id: mkId(), object: "chat.completion", created: now(), model: payload.model || "magnum-agent", choices: [{ index: 0, message: { role: "assistant", content, tool_calls: [] }, finish_reason: "stop" }], usage: mkUsage(0, 0) });
+        }
+
+        // Legacy text shortcut (kept for backward compatibility)
+        if (last && last.role === "user" && typeof last.content === "string") {
+          const m = last.content.match(/^TOOL_CALL:\s*([a-zA-Z_]+)\s*\n?([\s\S]*)$/);
+          if (m) {
+            let a = {};
+            try { a = JSON.parse(m[2] || "{}"); } catch {}
+            const r = await mcp.callTool(currentTools, m[1], a);
+            const txt = (r.content && r.content[0] && r.content[0].text) || "";
+            return reply({ id: mkId(), object: "chat.completion", created: now(), model: payload.model || "magnum-agent", choices: [{ index: 0, message: { role: "assistant", content: txt }, finish_reason: "stop" }], usage: mkUsage(0, 0) });
+          }
+        }
+
+        // Tool advertisement / readiness handshake.
+        const toolNames = mcp.TOOL_DEFS.map(t => t.name).join(", ");
+        const content = messages.length === 0
+          ? `MagNum MCP is ready. Tools: ${toolNames}.`
+          : `MagNum is ready. Call any tool via native OpenAI tool_calls, or POST /mcp for JSON-RPC. Available tools: ${toolNames}.`;
+        return reply({ id: mkId(), object: "chat.completion", created: now(), model: payload.model || "magnum-agent", choices: [{ index: 0, message: { role: "assistant", content, tool_calls: [] }, finish_reason: "stop" }], tools: openaiTools, usage: mkUsage(0, 0) });
+      } catch (e) { return reply({ error: { message: e.message || String(e), type: "server_error" } }, 500); }
+    });
+    return;
+  }
+
+  if (req.method === "GET" && (req.url === "/v1/models" || req.url === "/v1/models/")) {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ object: "list", data: [{ id: "magnum-agent", object: "model", owned_by: "magnum", created: Math.floor(Date.now()/1000) }] }));
+    return;
+  }
+
   if (req.method === 'POST' && req.url === '/api/browser-sync') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
       try {
         const payload = JSON.parse(body);
+        const nextUrl = payload.url || latestBrowserPage.url || '';
+        const urlChanged = !!payload.url && payload.url !== latestBrowserPage.url;
+        const nextText = (payload.text && String(payload.text).trim())
+          ? payload.text
+          : (urlChanged ? '' : (latestBrowserPage.text || ''));
         latestBrowserPage = {
-          url: payload.url || latestBrowserPage.url,
-          title: payload.title || latestBrowserPage.title,
-          text: payload.text || latestBrowserPage.text
+          url: nextUrl,
+          title: payload.title || (urlChanged ? '' : latestBrowserPage.title) || '',
+          text: nextText
         };
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
@@ -633,6 +781,16 @@ server.on('request', async (req, res) => {
           res.end(JSON.stringify({ ok: true, url: page.url() }));
           return;
         }
+        // ★ Linux (WebKitGTK) has no CDP bridge — the frontend performs the
+        // navigation itself and reports the resulting URL back. Just ack so
+        // embeddedBrowser.ts does not retry the CDP path.
+        if (payload.action === 'navigate' && payload.url) {
+          latestBrowserPage = { url: payload.url, title: latestBrowserPage.title || '', text: latestBrowserPage.text || '' };
+          broadcast({ event: 'embedded_navigated', url: payload.url });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, url: payload.url, via: 'frontend' }));
+          return;
+        }
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: false, error: 'Webview not found' }));
       } catch (e) {
@@ -656,6 +814,14 @@ server.on('request', async (req, res) => {
     } catch {}
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ url: '', title: '' }));
+    return;
+  }
+
+  // Kill-switch: close all Playwright-launched browsers (used on app unload so
+  // Chrome/Edge windows spawned by stealth.js never become orphans).
+  if (req.method === 'POST' && req.url === '/api/shutdown') {
+    try { await gracefulShutdown('api_shutdown'); } catch {}
+    try { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: true })); } catch {}
     return;
   }
 });
@@ -781,9 +947,11 @@ const browserTool = {
         const title = await page.title().catch(() => 'صفحه وب');
         const text = await page.evaluate(() => {
           if (!document.body) return '';
+          const t = document.body.innerText || '';
+          if (t.trim()) return t;
           const clone = document.body.cloneNode(true);
-          clone.querySelectorAll('script, style, noscript, svg').forEach(el => el.remove());
-          return clone.innerText || '';
+          clone.querySelectorAll('script, style, noscript, svg, textarea').forEach(el => el.remove());
+          return (clone.textContent || '').replace(/[ \t]+/g,' ').replace(/\n{3,}/g,'\n\n').trim();
         }).catch(() => '');
 
         broadcast({ event: 'embedded_navigated', url: page.url(), title });
@@ -807,11 +975,37 @@ const browserTool = {
     const page = await getEmbeddedWebviewPage();
 
     if (!page) {
+      // ★ FALLBACK: on Linux the embedded browser is WebKitGTK (no CDP), so `page`
+      //   is almost always null. Use the last snapshot pushed by the frontend
+      //   via /api/browser-sync instead of giving up.
+      const snap = latestBrowserPage || { url: '', title: '', text: '' };
+      const snapOpen = !!snap.url && snap.url !== 'about:blank';
+      if (snapOpen) {
+        const snapLines = String(snap.text || '').split('\n').map(l => l.trim()).filter(Boolean);
+        if (snapLines.length) {
+          const s2 = Math.max(1, Number(start) || 1);
+          const e2 = Math.min(snapLines.length, Number(end) || (s2 + 149));
+          const out2 = [];
+          for (let i = s2; i <= e2 && i <= snapLines.length; i++) out2.push({ lineNum: i, text: snapLines[i - 1] });
+          return {
+            url: snap.url,
+            title: snap.title || 'صفحه وب',
+            totalLines: snapLines.length,
+            lines: out2
+          };
+        }
+        return {
+          url: snap.url,
+          title: snap.title || 'صفحه وب',
+          totalLines: 0,
+          lines: [{ lineNum: 1, text: 'صفحه در پنل مرورگر بارگذاری شده اما هنوز متنی به بک‌اند نرسیده است. اگر تب تازه باز شده، چند لحظه صبر کن و دوباره read_page بزن؛ در غیر این صورت reload کن.' }]
+        };
+      }
       return {
         url: 'Embedded Browser',
         title: 'صفحه مرورگر باز نیست',
         totalLines: 0,
-        lines: [{ lineNum: 1, text: 'پنل مرورگر فعال نیست یا آدرسی در آن بارگذاری نشده است.' }]
+        lines: [{ lineNum: 1, text: 'پنل مرورگر فعال نیست یا آدرسی در آن بارگذاری نشده است. لطفاً یک تب در پنل مرورگر باز کنید.' }]
       };
     }
 
@@ -823,9 +1017,11 @@ const browserTool = {
       pageTitle = await page.title().catch(() => 'صفحه وب');
       rawText = await page.evaluate(() => {
         if (!document.body) return '';
+        const t = document.body.innerText || '';
+        if (t.trim()) return t;
         const clone = document.body.cloneNode(true);
-        clone.querySelectorAll('script, style, noscript, svg').forEach(el => el.remove());
-        return clone.innerText || '';
+        clone.querySelectorAll('script, style, noscript, svg, textarea').forEach(el => el.remove());
+        return (clone.textContent || '').replace(/[ \t]+/g,' ').replace(/\n{3,}/g,'\n\n').trim();
       }).catch(() => '');
     } catch (err) {
       rawText = `خطا در خواندن صفحه: ${err.message}`;
@@ -2469,12 +2665,12 @@ await sessionStore.appendMessage(currentSessionId, {
                 exists = await driver.checkChatExists(sessUrl);
               }
               if (!exists) {
-                await sessionStore.deleteSession(data.sessionId);
-                const updated = await sessionStore.getSessions();
-                currentSessionId = null;
-                await driver.startNewChat();
-                broadcast({ event: 'session_purged_remote', sessionId: data.sessionId, sessions: updated });
-                broadcast({ event: 'agent_status', text: tS('previousPurged') });
+                // The DeepSeek chat is not reachable with the current account
+                // (e.g. the user switched accounts). Keep the local session and
+                // only drop the stale remote URL instead of deleting the chat.
+                const sess = await sessionStore.loadSession(data.sessionId);
+                if (sess) { sess.deepseekUrl = null; await sessionStore.saveSession(sess); }
+                broadcast({ event: 'agent_status', text: 'DeepSeek chat is not available on the current account — local session kept.' });
                 return;
               }
               if (!sessUrl) await driver.startNewChat();
@@ -3005,6 +3201,40 @@ async function autoRestoreDefaultProvider(provider) {
     providerSwitchInProgress = false;
   }
 }
+
+// ── Graceful shutdown: close all Playwright browsers so they don't become orphans ──
+let shuttingDown = false;
+async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] received ${signal} — closing browsers & server...`);
+  // Stop any running agent & terminal child
+  try { if (runningAgent) { runningAgent.stop(); runningAgent = null; } } catch {}
+  try { if (termShell) { termShell.kill(); termShell = null; } } catch {}
+  // Close every Playwright browser context (Chrome/Edge windows spawned by stealth.js)
+  const closers = [];
+  try { if (browserContext) closers.push(browserContext.close().catch(() => {})); } catch {}
+  try { if (geminiContext) closers.push(geminiContext.close().catch(() => {})); } catch {}
+  try { if (chatgptContext) closers.push(chatgptContext.close().catch(() => {})); } catch {}
+  try { await Promise.race([Promise.all(closers), new Promise(r => setTimeout(r, 4000))]); } catch {}
+  browserContext = null; activePage = null;
+  geminiContext = null; activeGeminiPage = null;
+  chatgptContext = null; activeChatGptPage = null;
+  try { if (cdpBrowser && cdpBrowser.isConnected()) await cdpBrowser.close().catch(() => {}); } catch {}
+  cdpBrowser = null;
+  // Close WS clients and HTTP server
+  try { wss.clients.forEach(c => { try { c.terminate(); } catch {} }); } catch {}
+  try { server.close(() => process.exit(0)); } catch { process.exit(0); }
+  setTimeout(() => process.exit(0), 1500).unref();
+}
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGHUP', () => gracefulShutdown('SIGHUP'));
+process.on('beforeExit', () => gracefulShutdown('beforeExit'));
+process.on('exit', () => {
+  // Last-ditch: synchronously ask Playwright children to die
+  try { if (browserContext && browserContext.browser && browserContext.browser().isConnected && browserContext.browser().isConnected()) { browserContext.browser().close().catch(() => {}); } } catch {}
+});
 
 restoreLastWorkspace();
 server.listen(PORT, '127.0.0.1', async () => {

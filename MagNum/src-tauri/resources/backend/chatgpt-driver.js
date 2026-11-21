@@ -324,22 +324,31 @@ class ChatGptDriver {
 
   async clickSendButton() {
     if (!this.page || this.page.isClosed()) return false;
+    await this.page.bringToFront().catch(() => {});
     const domClicked = await this.page.evaluate(({ compSel, sendSel }) => {
       const norm = (s) => (s || '').replace(/\u00a0/g, ' ').trim();
       const isVisible = (el) => {
+        if (!el || !el.isConnected) return false;
         const r = el.getBoundingClientRect();
         if (!r || r.width < 4 || r.height < 4) return false;
         const st = window.getComputedStyle(el);
-        if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') return false;
+        if (st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0' || st.pointerEvents === 'none') return false;
         if (el.closest('[inert]')) return false;
+        if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return false;
         return true;
       };
       const isSend = (b) => {
         const label = (b.getAttribute('aria-label') || '').toLowerCase();
-        if (/voice|dictate|microphone|record/.test(label)) return false;
+        if (/voice|dictate|microphone|record|attach|upload|file/.test(label)) return false;
         if (b.hasAttribute('data-composer-voice-start') || b.hasAttribute('data-dictation-button')) return false;
         if (b.disabled || b.getAttribute('aria-disabled') === 'true') return false;
-        return true;
+        const hasSendSignal = b.type === 'submit'
+          || /^send/i.test(label)
+          || /send-button/.test(b.getAttribute('data-testid') || '')
+          || b.hasAttribute('data-composer-submit')
+          || /bg-composer-primary/.test(b.className || '')
+          || !!b.querySelector('svg.icon-primary-action');
+        return hasSendSignal;
       };
       const score = (x) =>
         (x.type === 'submit' ? 4 : 0) +
@@ -372,11 +381,15 @@ class ChatGptDriver {
 
     const candidates = [
       'form[data-chatgpt-composer] button[type="submit"][aria-label="Send"]',
-      'form[data-chatgpt-composer] button[type="submit"]',
-      'button[data-testid="send-button"]',
-      'form[data-chatgpt-composer] button[aria-label="Send"]',
+      'form[data-chatgpt-composer] button[type="submit"]:not([disabled])',
+      'button[data-testid="send-button"]:not([disabled])',
+      'button[data-composer-submit]:not([disabled])',
+      'form[data-chatgpt-composer] button[aria-label="Send"]:not([disabled])',
+      'form[data-chatgpt-composer] button[aria-label*="send" i]:not([disabled])',
       'form[data-chatgpt-composer] button.bg-composer-primary',
-      'form[data-chatgpt-composer] button:has(svg.icon-primary-action)'
+      'form[data-chatgpt-composer] button:has(svg.icon-primary-action)',
+      'button[aria-label="Send prompt"]',
+      'button[aria-label="Send message"]'
     ];
     for (const sel of candidates) {
       const loc = this.page.locator(sel).last();
@@ -523,9 +536,10 @@ class ChatGptDriver {
     const isSent = () => this.page.evaluate(({ compSel, stopSel }) => {
       const stop = document.querySelector(stopSel);
       const comps = Array.from(document.querySelectorAll(compSel));
-      const allEmpty = comps.length === 0 ||
+      const allEmpty = comps.length > 0 &&
         comps.every(c => (c.value || c.innerText || c.textContent || '').trim() === '');
-      return !!stop || allEmpty;
+      const userTurn = !!document.querySelector('[data-message-author-role="user"]');
+      return !!stop || allEmpty || userTurn;
     }, { compSel: COMPOSER_SEL, stopSel: STOP_SEL }).catch(() => false);
 
     let sent = false;
@@ -547,7 +561,41 @@ class ChatGptDriver {
     }
 
     if (!sent) {
-      throw new Error('ارسال پیام به ChatGPT انجام نشد (دکمه Send در هیچ موقعیتی قابل کلیک نبود). یک چت جدید باز کنید و دوباره تلاش کنید.');
+      const forced = await this.page.evaluate((compSel) => {
+        const eds = Array.from(document.querySelectorAll(compSel));
+        for (const ed of eds) {
+          const form = ed.closest('form');
+          if (form && typeof form.requestSubmit === 'function') {
+            const btn = form.querySelector('button[type="submit"]:not([disabled])');
+            try { form.requestSubmit(btn || undefined); return true; } catch {}
+          }
+        }
+        return false;
+      }, COMPOSER_SEL).catch(() => false);
+      if (forced) {
+        await this.page.waitForTimeout(1200);
+        if (await isSent()) sent = true;
+      }
+    }
+
+    if (!sent) {
+      const diag = await this.page.evaluate(({ compSel, sendSel }) => {
+        const compose = document.querySelector(compSel);
+        const btns = Array.from(document.querySelectorAll('button')).slice(0, 40).map(b => ({
+          label: b.getAttribute('aria-label') || '',
+          testid: b.getAttribute('data-testid') || '',
+          type: b.type || '',
+          disabled: !!b.disabled,
+          visible: (() => { const r = b.getBoundingClientRect(); return r.width > 3 && r.height > 3; })(),
+          cls: (b.className || '').toString().slice(0, 80)
+        })).filter(x => x.visible);
+        return { url: location.href, composerFound: !!compose, composerText: compose ? (compose.value || compose.innerText || compose.textContent || '').slice(0, 80) : '', buttons: btns, sendSelectorMatched: !!document.querySelector(sendSel) };
+      }, { compSel: COMPOSER_SEL, sendSel: SEND_SEL }).catch(() => null);
+      console.warn('❌ ChatGPT send diagnostics:', JSON.stringify(diag, null, 2));
+      const e = new Error('ارسال پیام به ChatGPT انجام نشد (دکمه Send در هیچ موقعیتی قابل کلیک نبود). یک چت جدید باز کنید و دوباره تلاش کنید.');
+      e.code = 'SEND_BUTTON_NOT_CLICKABLE';
+      e.diagnostics = diag;
+      throw e;
     }
   }
 

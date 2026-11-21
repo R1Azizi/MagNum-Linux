@@ -1,3 +1,7 @@
+[workspace]
+members = ["magnum-core"]
+exclude = ["magnum-fs"]
+
 [package]
 name = "magnum"
 version = "0.2.0"
@@ -25,12 +29,17 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+magnum-core = { path = "magnum-core" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+
+# Android: only build the desktop (Node-spawning) code on desktop targets.
+[target.'cfg(target_os = "android")'.dependencies]
+# Placeholder for mobile-specific deps (JNI, android plugins) added later.
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

@@ -211,7 +211,19 @@ const BrowserPanel: React.FC = () => {
     let ro: ResizeObserver | null = null;
     let alive = true;
     (async () => {
-      await syncRect();
+      // Reconnect (recreate if the webview was closed) then show it in place.
+      const el = hostRef.current;
+      if (el) {
+        const r = el.getBoundingClientRect();
+        if (r.width >= 10 && r.height >= 10) {
+          try {
+            await embeddedBrowser.reconnect({ x: r.left, y: r.top, width: r.width, height: r.height });
+            if (alive) { setReady(true); setError(null); }
+          } catch (e: any) {
+            if (alive) setError(String(e?.message || e));
+          }
+        }
+      }
       if (!alive) return;
       if (hostRef.current && typeof ResizeObserver !== 'undefined') {
         ro = new ResizeObserver(() => { syncRect(); });
@@ -224,7 +236,9 @@ const BrowserPanel: React.FC = () => {
       alive = false;
       ro?.disconnect();
       window.removeEventListener('resize', onWinResize);
-      embeddedBrowser.hide();
+      // Fully destroy the webview when the browser panel unmounts so no orphan
+      // window is left behind and reopening re-creates a fresh one.
+      embeddedBrowser.close();
     };
   }, [syncRect]);
 

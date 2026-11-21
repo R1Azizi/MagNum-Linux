@@ -73,6 +73,28 @@ export function useMagNumSocket(onOpenRightTab: (tab: RightPanelTab) => void) {
     bindAttachmentSender((action, payload) => sendActionRef.current(action, payload));
     return () => bindAttachmentSender(null);
   }, []);
+
+  // Ensure the backend closes any browsers it spawned when the app is killed,
+  // so no orphaned Chrome/Edge windows remain after the terminal is gone.
+  useEffect(() => {
+    let fired = false;
+    const killBrowsers = () => {
+      if (fired) return;
+      fired = true;
+      const info = backendInfoRef.current;
+      if (!info || !info.port) return;
+      try {
+        const url = `http://127.0.0.1:${info.port}/api/shutdown?token=${encodeURIComponent(info.token || '')}`;
+        if (navigator.sendBeacon) navigator.sendBeacon(url, '{}');
+      } catch {}
+    };
+    window.addEventListener('beforeunload', killBrowsers);
+    window.addEventListener('pagehide', killBrowsers);
+    return () => {
+      window.removeEventListener('beforeunload', killBrowsers);
+      window.removeEventListener('pagehide', killBrowsers);
+    };
+  }, []);
   const [accountInfo, setAccountInfo] = useState<{ isLoggedIn: boolean; email?: string }>({ isLoggedIn: false });
   const [activeWorkspace, setActiveWorkspace] = useState<string>('');
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
@@ -124,6 +146,7 @@ const [networkRetry, setNetworkRetry] = useState<{ attempt: number; max: number 
   const browsePending = useRef(new Map<string, (d: any) => void>());
   const selectedFileNameRef = useRef(selectedFileName);
 const currentSessionIdRef = useRef<string | null>(currentSessionId);
+  const backendInfoRef = useRef<{ port: number; token: string } | null>(null);
 
   useEffect(() => {
     selectedFileNameRef.current = selectedFileName;
@@ -158,6 +181,7 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
         port = await getBackendPort();
         embeddedBrowser.setPort(port);
         wsToken = await getWsToken(port);
+        backendInfoRef.current = { port, token: wsToken };
       } catch (err) {
         console.error('[ws] Could not get token/port:', err);
       }

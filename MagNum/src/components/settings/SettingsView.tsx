@@ -10,7 +10,8 @@ import {
   BookOpen, 
 
   ExternalLink,
-  Bot
+  Bot,
+  Plug
 } from 'lucide-react';
 import { Language, translations } from '../../i18n/translations';
 import { alertDialog } from '../modals/AppDialog';
@@ -61,7 +62,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onRunDiagnostic,
   diagnosticResult
 }) => {
-  const [activeCategory, setActiveCategory] = useState<'browser' | 'general' | 'appearance' | 'models' | 'agents'>('browser');
+  const [activeCategory, setActiveCategory] = useState<'browser' | 'general' | 'appearance' | 'models' | 'agents' | 'integrations'>('browser');
   const [searchQuery, setSearchQuery] = useState('');
   
   const [browserProtection, setBrowserProtection] = useState(false);
@@ -206,6 +207,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           >
             <Bot size={14} />
             <span>{t.agents}</span>
+          </div>
+
+          <div
+            onClick={() => setActiveCategory('integrations')}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              padding: '8px 10px',
+              borderRadius: '6px',
+              cursor: 'pointer',
+              background: activeCategory === 'integrations' ? 'rgba(255,255,255,0.08)' : 'transparent',
+              color: activeCategory === 'integrations' ? 'var(--text-main)' : 'var(--text-muted)'
+            }}
+          >
+            <Plug size={14} />
+            <span>Integrations (MCP)</span>
           </div>
 
           <div 
@@ -548,6 +566,50 @@ background: 'var(--bg-surface)',
     </div>
   </>
 )}
+
+        {activeCategory === 'integrations' && (
+          <>
+            <h2 style={{ fontSize: '18px', fontWeight: 700 }}>Integrations (MCP)</h2>
+            <div style={{ background: 'var(--bg-surface)', border: '1px solid var(--border-subtle)', borderRadius: '10px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div>
+                <div style={{ fontSize: '13px', fontWeight: 600 }}>Model Context Protocol Server</div>
+                <div style={{ fontSize: '12px', color: 'var(--text-dim)', marginTop: '4px', lineHeight: '1.6' }}>
+                  Connect MagNum as an MCP tool provider to Zed, Cursor, VSCode (Cline / Roo / Continue), Claude Desktop and any MCP-aware agent. Copy the snippet below into the target editor's config.
+                </div>
+              </div>
+              <div style={{ fontSize: '12px', fontWeight: 600 }}>Zed / Cursor / Claude Desktop / Cline</div>
+              <pre style={{ background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '12px', fontSize: '11.5px', color: 'var(--text-main)', overflowX: 'auto', lineHeight: 1.6 }}>{`{
+  "command": "node",
+  "args": [
+    "<MAGNUM_DIR>/src-tauri/resources/backend/mcp-server.js",
+    "--workspace",
+    "<YOUR_PROJECT_PATH>"
+  ]
+}`}</pre>
+              <div style={{ fontSize: '12px', color: 'var(--text-dim)', lineHeight: 1.6 }}>
+                Step 1: open your workspace in MagNum so the path is known.<br />
+                Step 2: paste this snippet into the editor's MCP config.<br />
+                Step 3: restart the editor — MagNum tools appear under the agent panel.
+              </div>
+              <div style={{ fontSize: '12px', fontWeight: 600, marginTop: '4px' }}>HTTP / JSON-RPC (Streamable)</div>
+              <pre style={{ background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '12px', fontSize: '11.5px', color: 'var(--text-main)', overflowX: 'auto', lineHeight: 1.6 }}>{`POST http://127.0.0.1:<PORT>/mcp
+Content-Type: application/json
+
+{ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }`}</pre>
+              <div style={{ fontSize: '11.5px', color: 'var(--text-dim)' }}>Discovery: GET <code>/mcp/info</code> — returns workspace, tool count and tool list.</div>
+              <div style={{ fontSize: '12px', fontWeight: 600, marginTop: '4px' }}>OpenAI-compatible API (Phase 3)</div>
+              <pre style={{ background: 'rgba(0,0,0,0.35)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '12px', fontSize: '11.5px', color: 'var(--text-main)', overflowX: 'auto', lineHeight: 1.6 }}>{`GET  /v1/models
+POST /v1/chat/completions   # native OpenAI tool_calls
+
+# legacy text shortcut:
+TOOL_CALL:<tool_name>\n<json-args>`}</pre>
+              <div style={{ fontSize: '11.5px', color: 'var(--text-dim)' }}>Supports native OpenAI <code>tools</code> / <code>tool_calls</code> (works with any OpenAI SDK, Goddot, Continue).</div>
+              <div style={{ fontSize: '11.5px', color: 'var(--text-dim)', borderTop: '1px solid var(--border-subtle)', paddingTop: '10px' }}>
+                Tools exposed: read_files, read_file_range, patch_file, patch_batch, create_file, execute_command, list_dir, search_code, get_project_tree.
+              </div>
+            </div>
+          </>
+        )}
 
         {activeCategory === 'models' && (
           <ModelsSettings

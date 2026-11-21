@@ -5,6 +5,19 @@ use std::sync::Mutex;
 
 use tauri::Manager;
 
+// Shared tool executor used on Android (and reusable on desktop later).
+#[allow(unused_imports)]
+use magnum_core::{Action, ActionResult, Dispatcher, NullBrowser, NullFs};
+
+/// Smoke-check that the shared core links and dispatches.
+#[tauri::command]
+fn core_selftest() -> Result<String, String> {
+    let d = Dispatcher { browser: NullBrowser, fs: NullFs };
+    let a = Action { action: "read_files".into(), params: serde_json::json!({ "file": "x" }) };
+    let r: ActionResult = d.dispatch(a);
+    serde_json::to_string(&r).map_err(|e| e.to_string())
+}
+
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -326,30 +339,40 @@ async fn pick_folder(_window: tauri::Window) -> Result<Option<String>, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        
+    let builder = tauri::Builder::default();
+
+    // Desktop-only plugins (single-instance, updater, process) are not
+    // available on Android.
+    #[cfg(not(target_os = "android"))]
+    let builder = builder
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init());
+
+    builder
         .plugin(tauri_plugin_opener::init())
- .plugin(tauri_plugin_updater::Builder::new().build())
- .plugin(tauri_plugin_process::init())
         .manage(AppState {
             server: Mutex::new(None),
             #[cfg(windows)]
             job: Mutex::new(0),
         })
         .setup(|app| {
+            // Desktop-only: spawn the Node backend. On Android the Rust core
+            // (magnum-core) runs in-process instead — see docs/android-plan.md.
+            #[cfg(not(target_os = "android"))]
+            {
             let resource_dir = app.path().resource_dir().expect("resource dir");
             let backend_dir = resource_dir.join("backend");
 
             let data_dir = app.path().app_data_dir().expect("app data dir");
             std::fs::create_dir_all(&data_dir).expect("create data dir");
 
-            #[cfg(windows)]
+            #[cfg(all(windows, not(target_os = "android")))]
             let job_handle = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
             #[cfg(windows)]
             if !job_handle.is_null() {
@@ -405,6 +428,7 @@ pub fn run() {
             }
 
             *state.server.lock().unwrap() = Some(child);
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -434,7 +458,7 @@ pub fn run() {
                 }
             }
         })
-        .invoke_handler(tauri::generate_handler![greet, set_app_theme, open_url, read_ws_token, get_backend_port, wait_backend_port, place_embedded_browser, pick_folder])
+        .invoke_handler(tauri::generate_handler![greet, set_app_theme, open_url, read_ws_token, get_backend_port, wait_backend_port, place_embedded_browser, pick_folder, core_selftest])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
