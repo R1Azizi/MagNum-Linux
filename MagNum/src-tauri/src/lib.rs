@@ -341,6 +341,9 @@ async fn pick_folder(_window: tauri::Window) -> Result<Option<String>, String> {
 pub fn run() {
     let builder = tauri::Builder::default();
 
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tauri_plugin_android_provider::init());
+
     // Desktop-only plugins (single-instance, updater, process) are not
     // available on Android.
     #[cfg(not(target_os = "android"))]
@@ -362,8 +365,7 @@ pub fn run() {
             job: Mutex::new(0),
         })
         .setup(|app| {
-            // Desktop-only: spawn the Node backend. On Android the Rust core
-            // (magnum-core) runs in-process instead — see docs/android-plan.md.
+            // Android provider chat uses the in-process mobile plugin.
             #[cfg(not(target_os = "android"))]
             {
             let resource_dir = app.path().resource_dir().expect("resource dir");

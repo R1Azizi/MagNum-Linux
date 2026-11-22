@@ -274,12 +274,23 @@ function taskReminderBlock(task) {
 
 const CONFUSED_FINISH_RE = /not (yet )?(been )?(specified|provided|given)|no (task|change|request)|ask for|clarif|please (provide|specify|share|upload)|what (would|do) you|i (cannot|can't) (access|edit|modify)|upload|بارگذاری|مشخص نشده|درخواستی مشخص|لطفاً.*(بگویید|مشخص کنید|بارگذاری)/i;
 
+function describeRead(chunks) {
+  const segments = chunks[0].segments || [];
+  const failures = segments.filter(segment => segment.error);
+  return {
+    status: failures.length ? (failures.length === segments.length ? 'failed' : 'partial') : 'succeeded',
+    message: failures.length ? failures.map(segment => segment.path + ': ' + segment.error).join(' · ')
+      : 'Read ' + segments.length + ' file segments'
+  };
+}
+
 class CodingAgent {
   constructor(driver, tools, onEvent = null, browser = null) {
     this.driver = driver;
     this.tools = tools;
     this.onEvent = onEvent;
     this.browser = browser;
+    this.controller = new AbortController();
     this.isStopped = false;
     this.pendingChunks = [];
     this.readResume = null;
@@ -310,6 +321,7 @@ class CodingAgent {
 
   stop() {
     this.isStopped = true;
+    this.controller.abort();
     this.pendingChunks = [];
     if (this.patchResolver) {
       this.patchResolver(false);
@@ -320,7 +332,7 @@ class CodingAgent {
       this.commandResolver = null;
     }
     if (this.driver) {
-      this.driver.abort();
+      return this.driver.abort();
     }
   }
 
@@ -492,6 +504,21 @@ class CodingAgent {
     return { thought, action, params: {} };
   }
 
+  async observeTool(action, target, execute, summarize = result => ({
+    status: result?.status || (result?.success === false || result?.error ? 'failed' : 'succeeded'),
+    message: result?.error || result?.message
+  })) {
+    this.emit('tool_started', { action, target });
+    try {
+      const result = await execute();
+      this.emit('tool_result', { action, target, ...summarize(result) });
+      return result;
+    } catch (error) {
+      this.emit('tool_result', { action, target, status: this.isStopped ? 'cancelled' : 'failed', message: error.message });
+      throw error;
+    }
+  }
+
   async run(task, options = {}) {
     this.isStopped = false;
     this.pendingChunks = [];
@@ -586,12 +613,8 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
     await this.driver.sendMessage(initialMessage, options);
     if (sendingFullPrompt) this._systemPromptSent = true;
 
-    const liveUrl = await this.driver.getChatUrl();
-    if (liveUrl && liveUrl.includes('/chat/')) {
-      this.emit('chat_url_captured', { url: liveUrl });
-    }
+    this.emit('provider_prompt_sent', { url: await this.driver.getChatUrl() });
 
-    let taskFinished = false;
     let rateLimitStop = false;
     let noNewStop = false;
     let loopRepeatCount = 0;
@@ -599,6 +622,7 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
     while (true) {
       if (this.isStopped) break;
 
+      this.emit('run_step', { text: 'Waiting for ' + P });
       this.emit('agent_status', { text: `${P} is thinking...` });
 
       let response;
@@ -619,6 +643,8 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
               this.emit('agent_status', { text: statusText });
             }
           );
+          this.emit('chat_url_captured', { url: await this.driver.getChatUrl() });
+          if (!this.isStopped) this.driver.assertSendTarget?.();
           break;
         } catch (waitErr) {
           if (waitErr.code === 'NO_NEW_RESPONSE' || (waitErr.message && waitErr.message.includes('NO_NEW_RESPONSE'))) {
@@ -686,8 +712,7 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
         const msg = rlProvider === 'chatgpt' ? L.rateLimitChatGpt : L.rateLimitGemini;
         this.emit('agent_status', { text: `${P} rate limit reached — waiting for quota reset or provider switch.` });
         this.emit('agent_message', { role: 'agent', text: msg, thought: '', action: 'finish' });
-        this.emit('task_finished', { summary: msg });
-        taskFinished = true;
+        this.emit('task_finished', { summary: msg, outcome: 'failed' });
         break;
       }
       if (this.isStopped) break;
@@ -699,8 +724,7 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
           : '**No new model response was detected for this turn.** The stale-answer protection blocked a wrong (previous-turn) answer; no changes were made. Please re-send your prompt.';
         this.emit('agent_status', { text: 'No new response detected — task stopped safely.' });
         this.emit('agent_message', { role: 'agent', text: msg, thought: '', action: 'finish' });
-        this.emit('task_finished', { summary: msg });
-        taskFinished = true;
+        this.emit('task_finished', { summary: msg, outcome: 'failed' });
         break;
       }
 
@@ -713,8 +737,7 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
             ? '**پاسخ مدل قابل استفاده نبود (۳ تلاش پشت‌سرهم).** هیچ تغییری اعمال نشد؛ پرامپت را دوباره بفرستید یا مدل را عوض کنید.'
             : '**Model response was unusable (3 consecutive attempts).** No changes were made. Re-send your prompt or switch model.';
           this.emit('agent_message', { role: 'agent', text: limitMsg, thought: '', action: 'finish' });
-          this.emit('task_finished', { summary: limitMsg });
-          taskFinished = true;
+          this.emit('task_finished', { summary: limitMsg, outcome: 'failed' });
           break;
         }
         console.log('⚠️ Response is not JSON action. Model output was:\n', String(response || '').slice(-300));
@@ -772,7 +795,6 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
           action: 'finish'
         });
         this.emit('task_finished', { summary });
-        taskFinished = true;
         break;
       }
 
@@ -821,12 +843,12 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
           }
           lastReadSignature = currentSignature;
           console.log('📖 Reading window (≤1000 lines):', effFiles.join(', '));
-          const chunks = await this.tools.prepareFileChunks(effFiles, effRanges, 1000, (filePath, range) => {
+          const chunks = await this.observeTool(decision.action, effFiles.join(', '), () => this.tools.prepareFileChunks(effFiles, effRanges, 1000, (filePath, range) => {
             const rText = range && (range.start_line || range.end_line)
               ? ` (lines ${range.start_line || 1}-${range.end_line || 'end'})`
               : ' (from line 1)';
             this.emit('agent_status', { text: `Reading file: ${filePath}${rText}` });
-          });
+          }), describeRead);
           const chunk = chunks[0];
           this.readResume = chunk.hasMore ? chunk.remaining : null;
           this.emit('agent_message', {
@@ -848,7 +870,10 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
         } else {
           lastSearchSignature = searchSig;
           console.log(`🔍 Searching code for: "${query}"`);
-          const searchResult = await this.tools.searchCode(query, 25, decision.params?.root || null);
+          const searchResult = await this.observeTool('search_code', query,
+            () => this.tools.searchCode(query, 25, decision.params?.root || null),
+            result => result.success === false ? { status: 'failed', message: result.error }
+              : { status: 'succeeded', message: result.totalMatches + ' matches' });
           const hits = searchResult.matches || [];
           const searchMatchesText = hits.length > 0
             ? hits.slice(0, 5).map(m => `• \`${m.file}\` (${L.lineLabel(m.line)}${m.totalLines ? ` / ${m.totalLines}` : ''}): \`${m.snippet}\``).join('\n')
@@ -876,7 +901,7 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
           lastListSignature = `${target}:${depth}`;
           console.log(`📂 Listing directory: ${target}`);
           this.emit('agent_status', { text: `Listing directory: ${target}` });
-          const listResult = await this.tools.listDirectory(target, depth);
+          const listResult = await this.observeTool('list_dir', target, () => this.tools.listDirectory(target, depth));
           this.emit('agent_message', {
             role: 'agent',
             text: `**Listed directory:** \`${listResult.path}\``,
@@ -893,7 +918,8 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
           for (const r of this.readResume) {
             if (r.startLine >= 1) ranges[r.path] = { start_line: r.startLine, end_line: r.endLine };
           }
-          const chunks = await this.tools.prepareFileChunks(files, ranges, 1000);
+          const chunks = await this.observeTool('continue_reading', files.join(', '),
+            () => this.tools.prepareFileChunks(files, ranges, 1000), describeRead);
           const chunk = chunks[0];
           this.readResume = chunk.hasMore ? chunk.remaining : null;
           lastReadSignature = null;
@@ -957,6 +983,7 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
             this.patchResolver = resolve;
           });
 
+          if (this.isStopped) break;
           if (!approved) {
             toolFeedback = 'TOOL RESULT: The user REJECTED this patch. Explain alternatives or call "finish".';
             this.emit('agent_message', {
@@ -972,7 +999,13 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
         }
 
         this.emit('agent_status', { text: `Applying ${patchesList.length} patch(es)...` });
-        patchResult = await this.tools.patchBatch(patchesList);
+        patchResult = await this.observeTool('patch_file', patchesList.map(p => p.file).join(', '),
+          () => this.tools.patchBatch(patchesList, { captureEdits: true }),
+          result => ({
+            status: result.success ? 'succeeded' : result.successful ? 'partial' : 'failed',
+            message: [result.successful + '/' + result.total + ' patches succeeded', ...result.details
+              .filter(detail => !detail.success).map(detail => detail.message)].join(' · ')
+          }));
         if (patchResult && patchResult.successful > 0) this.mutationsApplied += patchResult.successful;
 
         const summaryLines = patchResult.details.map(d =>
@@ -981,18 +1014,7 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
 
         const userFacingText = `**${L.patchesLabel(patchResult.successful, patchResult.total)}**\n${summaryLines}`;
 
-        const successfulEdits = [];
-        if (patchResult && Array.isArray(patchResult.details)) {
-          patchResult.details.forEach((d, idx) => {
-            if (d.success && patchesList[idx]) {
-              successfulEdits.push({
-                file: patchesList[idx].file,
-                search: patchesList[idx].search,
-                replace: patchesList[idx].replace
-              });
-            }
-          });
-        }
+        const successfulEdits = patchResult.details.flatMap(detail => detail.edit ? [{ file: detail.file, ...detail.edit }] : []);
 
         this.emit('agent_message', {
           role: 'agent',
@@ -1003,7 +1025,7 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
           edits: successfulEdits
         });
 
-        toolFeedback = `TOOL RESULT:\n\`\`\`json\n${JSON.stringify(patchResult, null, 2)}\n\`\`\``;
+        toolFeedback = `TOOL RESULT:\n\`\`\`json\n${JSON.stringify({ ...patchResult, details: patchResult.details.map(({ file, success, message }) => ({ file, success, message })) }, null, 2)}\n\`\`\``;
       }
       else if (decision.action === 'create_file') {
         const { file, content } = decision.params;
@@ -1016,10 +1038,13 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
           file
         });
         this.emit('agent_status', { text: `Creating file: ${file}` });
-        const createResult = await this.tools.createFile(file, content);
+        const createResult = await this.observeTool('create_file', file,
+          () => this.tools.createFile(file, content, { captureEdits: true }));
+        if (createResult.success) this.emit('file_written', { file, edit: createResult.edit });
+        const { edit, ...createFeedback } = createResult;
         if (createResult && createResult.success) this.mutationsApplied++;
 
-        toolFeedback = `TOOL RESULT:\n\`\`\`json\n${JSON.stringify(createResult, null, 2)}\n\`\`\``;
+        toolFeedback = `TOOL RESULT:\n\`\`\`json\n${JSON.stringify(createFeedback, null, 2)}\n\`\`\``;
       }
       else if (decision.action === 'execute_command') {
         const command = decision.params?.command || decision.params?.cmd || decision.command;
@@ -1040,6 +1065,7 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
               this.commandResolver = resolve;
             });
 
+            if (this.isStopped) break;
             if (!approved) {
               toolFeedback = `TOOL RESULT: The user REJECTED this command: "${command}". Propose an alternative or finish.`;
               this.emit('agent_message', {
@@ -1063,7 +1089,9 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
             command
           });
           this.emit('agent_status', { text: `Executing command: ${command}` });
-          const execResult = await this.tools.executeCommand(command);
+          const execResult = await this.observeTool('execute_command', command,
+            () => this.tools.executeCommand(command, this.controller.signal),
+            ({ status, exitCode, signal, output, message }) => ({ status, exitCode, signal, output, message }));
           toolFeedback = `TOOL RESULT:\n\`\`\`json\n${JSON.stringify(execResult, null, 2)}\n\`\`\``;
         }
       }
@@ -1074,7 +1102,7 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
           const target = decision.params?.url || decision.params?.query || '';
           console.log(`🌐 Browsing: ${target}`);
           this.emit('agent_status', { text: `Browsing: ${target}` });
-          const res = await this.browser.navigate(target);
+          const res = await this.observeTool('browse_web', target, () => this.browser.navigate(target));
           this.emit('agent_message', {
             role: 'agent',
             text: `**Browsed:** \`${res.title}\` (${res.url})`,
@@ -1090,7 +1118,7 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
         } else {
           const start = typeof decision.params?.start_line === 'number' ? decision.params.start_line : 1;
           const end = typeof decision.params?.end_line === 'number' ? decision.params.end_line : start + 149;
-          const res = await this.browser.readRange(start, end);
+          const res = await this.observeTool('read_page', 'Lines ' + start + '–' + end, () => this.browser.readRange(start, end));
           this.emit('agent_message', {
             role: 'agent',
             text: `**Read page:** \`${res.title}\` (${L.linesRange(start, Math.min(end, res.totalLines))})`,
@@ -1122,6 +1150,7 @@ Reply ONLY with ONE \`\`\`json block (use "read_files" / "search_code" if you ne
       }
 
       console.log(`📤 Sending results back to ${P}...`);
+      this.emit('run_step', { text: 'Sending tool results to ' + P });
       this.emit('agent_status', { text: `Sending results back to ${P}...` });
       lastSentMessage = toolFeedback;
       await this.driver.sendMessage(toolFeedback, { provider: options.provider });

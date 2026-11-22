@@ -1,0 +1,3 @@
+[default]
+description = "Drive the app-scoped DeepSeek website from MagNum chat."
+permissions = ["allow-provider", "allow-android-agent"]

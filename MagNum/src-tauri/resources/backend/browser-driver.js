@@ -1,3 +1,4 @@
+const { checkConversation } = require('./conversation-access');
 'use strict';
 
 class DeepSeekDriver {
@@ -8,7 +9,7 @@ class DeepSeekDriver {
 
   abort() {
     this.isAborted = true;
-    this.clickStopButton().catch(() => {});
+    return this.clickStopButton().catch(() => {});
   }
 
   
@@ -215,6 +216,7 @@ class DeepSeekDriver {
 
   
   async sendMessage(text, options = {}) {
+    this.assertSendTarget?.();
     if (!this.page || this.page.isClosed()) throw new Error('مرورگر دیپ‌سیک بسته است.');
     if (typeof options.deepThink === 'boolean') await this.setDeepThink(options.deepThink);
 
@@ -260,6 +262,7 @@ class DeepSeekDriver {
     await this.page.waitForTimeout(300);
 
     
+    this.assertSendTarget?.();
     let isSent = await this.page.evaluate(() => {
       const buttons = Array.from(document.querySelectorAll('div[role="button"], button'));
       const sendBtn = buttons.reverse().find(b => {
@@ -279,6 +282,7 @@ class DeepSeekDriver {
     if (!isSent) {
       const sendLocator = this.page.locator('div[role="button"].ds-button--primary.ds-button--circle:not([disabled]):not(.ds-button--disabled)').last();
       if (await sendLocator.isVisible({ timeout: 500 }).catch(() => false)) {
+        this.assertSendTarget?.();
         await sendLocator.click({ force: true }).catch(() => {});
         isSent = true;
       }
@@ -286,6 +290,7 @@ class DeepSeekDriver {
 
     if (!isSent) {
       await input.focus();
+      this.assertSendTarget?.();
       await this.page.keyboard.press('Enter');
     }
 
@@ -299,6 +304,7 @@ class DeepSeekDriver {
 
     if (stillHasContent) {
       await input.focus();
+      this.assertSendTarget?.();
       await this.page.keyboard.press('Enter');
       await this.page.waitForTimeout(300);
     }
@@ -554,49 +560,8 @@ class DeepSeekDriver {
     }
   }
   async startNewChat() {
-    if (!this.page || this.page.isClosed()) {
-      throw new Error('مرورگر دیپ‌سیک در دسترس نیست.');
-    }
-
-    try {
-      await this.page.keyboard.press(process.platform === 'darwin' ? 'Meta+j' : 'Control+j');
-      await this.page.waitForTimeout(600);
-
-      const isInputEmpty = await this.page.evaluate(() => {
-        const input = document.querySelector('#chat-input, textarea');
-        return input ? (input.value || '') === '' : false;
-      });
-
-      if (!isInputEmpty) {
-        const clicked = await this.page.evaluate(() => {
-          const newChatBtn = Array.from(document.querySelectorAll('div[tabindex="0"], div[role="button"]'))
-            .find(el => (el.innerText || '').toLowerCase().includes('new chat'));
-
-          if (newChatBtn) {
-            newChatBtn.click();
-            return true;
-          }
-
-          const plusBtn = document.querySelector('div[role="button"].ds-button--capsule, div.ds-button--icon-relative-m');
-          if (plusBtn) {
-            plusBtn.click();
-            return true;
-          }
-          return false;
-        });
-
-        if (!clicked) {
-          await this.page.goto('https://chat.deepseek.com/', { waitUntil: 'domcontentloaded' });
-        }
-      }
-
-      await this.page.waitForSelector('#chat-input, textarea', { timeout: 8000 }).catch(() => {});
-      await this.page.waitForTimeout(1000);
-      return true;
-    } catch (err) {
-      console.error('Error starting new chat:', err.message);
-      return false;
-    }
+    await this.page.goto('https://chat.deepseek.com/', { waitUntil: 'domcontentloaded', timeout: 20000 });
+    return new URL(this.page.url()).pathname === '/';
   }
   async getChatUrl() {
     if (!this.page || this.page.isClosed()) return null;
@@ -624,41 +589,8 @@ class DeepSeekDriver {
     await this.page.goto(target, { waitUntil: 'domcontentloaded', timeout: 15000 });
     await this.page.waitForTimeout(1200);
   }
-  async checkChatExists(targetUrl) {
-    
-    if (!this.page || this.page.isClosed()) return true;
-    
-    if (!targetUrl) return false;
-    if (!targetUrl.includes('/chat/')) return true;
-    try {
-      
-      if (this.page.url() !== targetUrl) {
-        await this.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 10000 });
-        await this.page.waitForTimeout(1200);
-      }
-      const normalized = this.page.url().replace(/\/$/, '').split('?')[0].split('#')[0];
-      
-      if (!normalized.includes('/chat/')) {
-        return false;
-      }
-      
-      
-      
-      const verdict = await this.page.evaluate(() => {
-        const bodyText = document.body ? document.body.innerText.trim() : '';
-        const hasErrorElement = !!document.querySelector(
-          '[class*="not-found"], [class*="notFound"], [class*="error-page"], [class*="errorPage"], [class*="empty-page"]'
-        );
-        const hasMarker = /session does not exist|conversation not found|chat not found|page not found|404/i.test(bodyText);
-        return { hasErrorElement, hasMarker, isShort: bodyText.length < 300 };
-      });
-      if (verdict.hasErrorElement) return false;
-      if (verdict.hasMarker && verdict.isShort) return false;
-      return true;
-    } catch {
-      
-      return true;
-    }
+  checkConversation(target, diagnose) {
+    return checkConversation(this.page, 'deepseek', target, diagnose);
   }
 
   async getSidebarChatTitles() {

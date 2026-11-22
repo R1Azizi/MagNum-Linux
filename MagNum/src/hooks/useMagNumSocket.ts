@@ -1,15 +1,28 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ChatMessage, FileNode, SessionMeta, RightPanelTab, Attachment, EditSummary, EditDetail } from '../types';
+import type { AndroidTool } from './androidAgent';
+import { LocalRunActivity } from './localRunActivity';
 import { embeddedBrowser } from '../utils/embeddedBrowser';
+import { isAndroid } from '../utils/platform';
+import { AndroidProviderTransport, type ChatTransport } from './androidProviderTransport';
 import {
   bindAttachmentSender, stageAttachments as stageAtts,
-  unstageAttachment as unstageAtt, onLiveAttachmentsChange
+  unstageAttachment as unstageAtt
 } from '../utils/attachmentStaging';
 
 const PROVIDER_IDS = ['deepseek', 'gemini', 'chatgpt'] as const;
 type ProviderId = typeof PROVIDER_IDS[number];
+const accessLabels: Record<string, string> = {
+  checking: 'Checking conversation access…',
+  missing: 'The provider reports that this conversation is missing. Your local history is available below.',
+  denied: 'This account cannot access the saved conversation. Your local history is available below.',
+  disconnected: 'The provider browser is disconnected.',
+  sign_in: 'Sign in to the provider, then check access again.',
+  temporary: 'The provider could not verify access. Try again.'
+};
 function readDefaultProvider(): ProviderId {
+  if (isAndroid) return 'deepseek';
   const saved = localStorage.getItem('magnum_default_provider') as ProviderId | null;
   return saved && PROVIDER_IDS.includes(saved) ? saved : 'deepseek';
 }
@@ -67,34 +80,13 @@ async function getWsToken(port: number): Promise<string> {
 }
 
 export function useMagNumSocket(onOpenRightTab: (tab: RightPanelTab) => void) {
-  const [ws, setWs] = useState<WebSocket | null>(null);
+  const [ws, setWs] = useState<ChatTransport | null>(null);
   const sendActionRef = useRef<(action: string, payload?: Record<string, any>) => void>(() => {});
   useEffect(() => {
     bindAttachmentSender((action, payload) => sendActionRef.current(action, payload));
     return () => bindAttachmentSender(null);
   }, []);
 
-  // Ensure the backend closes any browsers it spawned when the app is killed,
-  // so no orphaned Chrome/Edge windows remain after the terminal is gone.
-  useEffect(() => {
-    let fired = false;
-    const killBrowsers = () => {
-      if (fired) return;
-      fired = true;
-      const info = backendInfoRef.current;
-      if (!info || !info.port) return;
-      try {
-        const url = `http://127.0.0.1:${info.port}/api/shutdown?token=${encodeURIComponent(info.token || '')}`;
-        if (navigator.sendBeacon) navigator.sendBeacon(url, '{}');
-      } catch {}
-    };
-    window.addEventListener('beforeunload', killBrowsers);
-    window.addEventListener('pagehide', killBrowsers);
-    return () => {
-      window.removeEventListener('beforeunload', killBrowsers);
-      window.removeEventListener('pagehide', killBrowsers);
-    };
-  }, []);
   const [accountInfo, setAccountInfo] = useState<{ isLoggedIn: boolean; email?: string }>({ isLoggedIn: false });
   const [activeWorkspace, setActiveWorkspace] = useState<string>('');
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
@@ -105,11 +97,29 @@ export function useMagNumSocket(onOpenRightTab: (tab: RightPanelTab) => void) {
   const streamingTextRef = useRef<string>('');
 const lastErrorRef = useRef<{ text: string; ts: number }>({ text: '', ts: 0 });
   const [animateId, setAnimateId] = useState<string | null>(null);
+  const desktopProtocol = useRef(false);
+  const activityProtocol = useRef(false);
+  const localActivity = useRef<LocalRunActivity | null>(null);
+  localActivity.current ??= new LocalRunActivity();
+  const [inspectorCapabilities, setInspectorCapabilities] = useState({ runActivity: false, gitChanges: false });
+  const [engineConnected, setEngineConnected] = useState(false);
+  const [inspectionRevision, setInspectionRevision] = useState(0);
+  const inspectorSequence = useRef(0);
+  const inspectorReplies = useRef(new Map<string, (data?: any) => void>());
+  const activeRun = useRef<string | null>(null);
+  const activeCommand = useRef<string | null>(null);
+  const pendingRequest = useRef<string | null>(null);
+  const [runId, setRunId] = useState<string | null>(null);
+  const [commandId, setCommandId] = useState<string | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [agentStatus, setAgentStatus] = useState<string>('');
 const [networkRetry, setNetworkRetry] = useState<{ attempt: number; max: number } | null>(null);
   const [isDeepThink, setIsDeepThink] = useState(readDeepThinkDefault);
   const [selectedProvider, setSelectedProvider] = useState<ProviderId>(readDefaultProvider);
+  const navigationId = useRef(0);
+  const selectedRef = useRef(selectedProvider);
+  selectedRef.current = selectedProvider;
+  const [access, setAccess] = useState({ status: isAndroid ? 'checking' : 'ready', detail: '' });
   const [defaultProvider, setDefaultProviderState] = useState<ProviderId>(readDefaultProvider);
   const [geminiThinking, setGeminiThinkingLevel] = useState<'low' | 'medium' | 'high'>(() => {
     const saved = localStorage.getItem('magnum_gemini_thinking');
@@ -133,6 +143,9 @@ const [networkRetry, setNetworkRetry] = useState<{ attempt: number; max: number 
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
   const [providersStatus, setProvidersStatus] = useState<{ deepseek: 'disconnected' | 'connecting' | 'connected'; gemini: 'disconnected' | 'connecting' | 'connected'; chatgpt: 'disconnected' | 'connecting' | 'connected' }>({ deepseek: 'disconnected', gemini: 'disconnected', chatgpt: 'disconnected' });
+  const [androidTools, setAndroidTools] = useState<AndroidTool[] | null>(null);
+  const [androidWorkspaceStatus, setAndroidWorkspaceStatus] = useState({ busy: false, message: '' });
+  const [androidRunWorkspace, setAndroidRunWorkspace] = useState('');
   const [recentWorkspaces, setRecentWorkspaces] = useState<string[]>([]);
   const [terminalLogs, setTerminalLogs] = useState<{ line: string; kind: string; ts: number }[]>([]);
   const [patchHistory, setPatchHistory] = useState<{ file: string; success: boolean; message?: string; ts: number }[]>([]);
@@ -146,7 +159,7 @@ const [networkRetry, setNetworkRetry] = useState<{ attempt: number; max: number 
   const browsePending = useRef(new Map<string, (d: any) => void>());
   const selectedFileNameRef = useRef(selectedFileName);
 const currentSessionIdRef = useRef<string | null>(currentSessionId);
-  const backendInfoRef = useRef<{ port: number; token: string } | null>(null);
+
 
   useEffect(() => {
     selectedFileNameRef.current = selectedFileName;
@@ -157,7 +170,7 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
   }, [currentSessionId]);
 
   useEffect(() => {
-    let socket: WebSocket | null = null;
+    let socket: ChatTransport | null = null;
     let retries = 0;
     let disposed = false; 
     let wsToken: string = '';
@@ -177,11 +190,15 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
     });
 
     const initializeAndConnect = async () => {
+      if (isAndroid) {
+        connect();
+        return;
+      }
       try {
         port = await getBackendPort();
         embeddedBrowser.setPort(port);
         wsToken = await getWsToken(port);
-        backendInfoRef.current = { port, token: wsToken };
+
       } catch (err) {
         console.error('[ws] Could not get token/port:', err);
       }
@@ -189,13 +206,19 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
     };
 
     const connect = () => {
+      let needsRestore = true;
       if (disposed) return;
       const wsUrl = wsToken
         ? `ws://127.0.0.1:${port}?token=${encodeURIComponent(wsToken)}`
         : `ws://127.0.0.1:${port}`;
-      socket = new WebSocket(wsUrl);
+      socket = isAndroid ? new AndroidProviderTransport() : new WebSocket(wsUrl);
       socket.onopen = () => {
+        setEngineConnected(true);
         retries = 0;
+        if (isAndroid) {
+          socket?.send(JSON.stringify({ action: 'get_sessions' }));
+          return;
+        }
         const lang = localStorage.getItem('magnum_lang') === 'fa' ? 'fa' : 'en';
         const savedDefault = localStorage.getItem('magnum_default_provider');
         const defProvider = savedDefault === 'chatgpt' || savedDefault === 'gemini' ? savedDefault : 'deepseek';
@@ -214,7 +237,74 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
           return;
         }
         const data = JSON.parse(event.data);
+        if (data.navigationId !== undefined && data.navigationId !== navigationId.current) return;
+        if (['run_history', 'run_activity', 'workspace_changes'].includes(data.event)) {
+          inspectorReplies.current.get(data.requestId)?.(data);
+          return;
+        }
+        if (data.event === 'run_activity_changed') {
+          setInspectionRevision(value => value + 1);
+          return;
+        }
+        if (!activityProtocol.current && data.event !== 'execution_state' && localActivity.current?.receive(data)) {
+          setInspectionRevision(value => value + 1);
+        }
+        if (data.runId && !['run_started', 'run_busy', 'runtime_busy'].includes(data.event) && data.runId !== activeRun.current) return;
+        if (data.commandId && data.event !== 'terminal_echo' && data.event !== 'execution_state' && data.commandId !== activeCommand.current) return;
         switch (data.event) {
+          case 'execution_state':
+            desktopProtocol.current = true;
+            activityProtocol.current = Boolean(data.capabilities?.runActivity);
+            setInspectorCapabilities({ runActivity: activityProtocol.current, gitChanges: Boolean(data.capabilities?.gitChanges) });
+            setInspectionRevision(value => value + 1);
+            activeRun.current = data.run?.runId || null;
+            activeCommand.current = data.commandId || null;
+            setRunId(activeRun.current);
+            setIsRunning(Boolean(activeRun.current));
+            if (data.run?.provider) {
+              setSelectedProvider(data.run.provider);
+              currentSessionIdRef.current = data.run.sessionId;
+              setCurrentSessionId(data.run.sessionId);
+              setMessages(resolveAtts(data.session?.messages || []));
+              setHasMoreMessages(Boolean(data.session?.hasMore));
+              setAccess({ status: 'ready', detail: '' });
+            }
+            setAgentStatus(data.run ? `Run ${data.run.runId} is active on ${data.run.provider}.` : '');
+            setCommandId(activeCommand.current);
+            setTermCwd(data.cwd || '');
+            setPendingCommand(data.pendingCommand || null);
+            setPendingPatches(data.pendingPatches || []);
+            break;
+          case 'run_started':
+            if (data.sessionId !== currentSessionIdRef.current || selectedRef.current !== data.provider) {
+              setMessages(resolveAtts(data.session?.messages || []));
+              currentSessionIdRef.current = data.sessionId;
+              setCurrentSessionId(data.sessionId);
+              setHasMoreMessages(Boolean(data.session?.hasMore));
+              setAccess({ status: 'ready', detail: '' });
+            }
+            activeRun.current = data.runId;
+            setRunId(data.runId);
+            setSelectedProvider(data.provider);
+            setIsRunning(true);
+            if (pendingRequest.current === data.requestId) pendingRequest.current = null;
+            break;
+          case 'run_busy':
+          case 'runtime_busy':
+            if (data.requestId && data.requestId === pendingRequest.current) {
+              pendingRequest.current = null;
+              setMessages(prev => prev.filter(m => m.id !== data.requestId));
+            }
+            setAgentStatus(`Run ${data.runId} is active on ${data.provider}.`);
+            break;
+          case 'android_provider_status': {
+            const status = ['ready', 'busy', 'missing'].includes(data.status) ? 'connected' : data.status === 'checking' ? 'connecting' : 'disconnected';
+            setConnectionStatus(status);
+            setProvidersStatus(p => ({ ...p, deepseek: status }));
+            setAccountInfo({ isLoggedIn: status === 'connected' });
+            setAccess({ status: data.status, detail: data.detail || '' });
+            break;
+          }
           case 'auth_status':
           case 'logged_in':
             setAccountInfo({ isLoggedIn: data.isLoggedIn ?? true, email: data.email || 'DeepSeek Online' });
@@ -229,12 +319,37 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
             break;
           case 'sessions_list':
             setSessions(data.sessions || []);
-            if (data.currentSessionId) setCurrentSessionId(data.currentSessionId);
+            if (data.runId && data.currentSessionId) {
+              setCurrentSessionId(data.currentSessionId);
+              currentSessionIdRef.current = data.currentSessionId;
+              localStorage.setItem('magnum_last_chat_' + data.provider, data.currentSessionId);
+            } else if (data.deletedSessionId && data.deletedSessionId === currentSessionIdRef.current) {
+              localActivity.current?.remove(data.deletedSessionId);
+              currentSessionIdRef.current = null;
+              setCurrentSessionId(null);
+              setMessages([]);
+              setAccess({ status: 'ready', detail: '' });
+            } else if (needsRestore && !activeRun.current && desktopProtocol.current) {
+              const provider = selectedRef.current;
+              const shared = data.sessions?.find((session: SessionMeta) => session.id === data.currentSessionId && session.provider === provider);
+              const id = currentSessionIdRef.current || localStorage.getItem('magnum_last_chat_' + provider) || shared?.id;
+              if (id && data.sessions?.some((s: SessionMeta) => s.id === id)) {
+                setAccess({ status: 'checking', detail: '' });
+                socket?.send(JSON.stringify({ action: 'load_session', sessionId: id, navigationId: ++navigationId.current }));
+              } else if (data.currentSessionId) {
+                setAccess({ status: 'checking', detail: '' });
+                socket?.send(JSON.stringify({ action: 'new_chat', provider, navigationId: ++navigationId.current }));
+              } else setAccess({ status: 'ready', detail: '' });
+            } else if (!isAndroid && !desktopProtocol.current && data.currentSessionId) setCurrentSessionId(data.currentSessionId);
+            needsRestore = false;
             break;
           case 'chat_reset':
+            currentSessionIdRef.current = null;
+            if (data.provider) localStorage.removeItem('magnum_last_chat_' + data.provider);
+            if (!desktopProtocol.current) setAccess({ status: 'ready', detail: '' });
             setMessages([]);
             setStreamingState(null);
-            setIsRunning(false);
+            if (!activeRun.current) setIsRunning(false);
             setCurrentSessionId(null);
             setSessions(data.sessions || []);
             setAgentStatus('');
@@ -247,14 +362,31 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
             setTotalMessageCount(0);
             setIsLoadingOlder(false);
             break;
+          case 'provider_restore_failed':
+            if (data.provider === selectedRef.current && navigationId.current === 0)
+              setAccess({ status: data.status, detail: data.detail || '' });
+            break;
+          case 'session_access':
+            if (data.runId && data.sessionId !== currentSessionIdRef.current) break;
+            setAccess({ status: data.status, detail: data.detail || '' });
+            if (data.status === 'ready' && data.sessionId) localStorage.setItem('magnum_last_chat_' + data.provider, data.sessionId);
+            if (data.requestId) setMessages(prev => prev.filter(m => m.id !== data.requestId));
+            break;
           case 'session_loaded':
+            currentSessionIdRef.current = data.session?.id || null;
+            if (!isAndroid) setAccess({ status: desktopProtocol.current ? 'checking' : 'ready', detail: '' });
+            if (!isAndroid && data.session?.id && data.session.provider) {
+              localStorage.setItem('magnum_last_chat_' + data.session.provider, data.session.id);
+            }
             setCurrentSessionId(data.session?.id || null);
             setMessages(resolveAtts(data.session?.messages || []));
             if (data.session?.provider) {
               setSelectedProvider(data.session.provider === 'gemini' ? 'gemini' : data.session.provider === 'chatgpt' ? 'chatgpt' : 'deepseek');
             }
-            setPendingPatches([]);
-            setPendingCommand(null);
+            if (!isAndroid) {
+              setPendingPatches([]);
+              setPendingCommand(null);
+            }
             setRevertedEditIds([]);
             setTerminalLogs([]);
             setHasMoreMessages(Boolean(data.session?.hasMore));
@@ -262,7 +394,21 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
             setIsLoadingOlder(false);
             setNetworkRetry(null);
             break;
+          case 'android_workspace_capabilities':
+            setAndroidTools(data.tools);
+            break;
+          case 'android_workspace_status':
+            setAndroidWorkspaceStatus({ busy: Boolean(data.busy), message: data.message || '' });
+            break;
+          case 'android_run_workspace':
+            setAndroidRunWorkspace(data.path || '');
+            break;
           case 'workspace_loaded':
+            if (isAndroid) {
+              setSelectedFileName('');
+              setSelectedFileContent(null);
+              if (!activeCommand.current) setTermCwd(data.path);
+            }
             setActiveWorkspace(data.path);
             setFileTree(data.tree || []);
             break;
@@ -292,7 +438,7 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
             break;
           case 'agent_message':
             
-            if (data.sessionId && currentSessionIdRef.current && data.sessionId !== currentSessionIdRef.current) {
+            if (data.sessionId && (isAndroid || currentSessionIdRef.current) && data.sessionId !== currentSessionIdRef.current) {
               console.log('Skipping background message for inactive view:', data.sessionId);
               break;
             }
@@ -340,6 +486,11 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
             break;
           case 'task_finished':
           case 'task_stopped':
+            if (desktopProtocol.current && !data.runId) break;
+            activeRun.current = null;
+            setRunId(null);
+            setPendingCommand(null);
+            setPendingPatches([]);
             setIsRunning(false);
             setAgentStatus('');
             setStreamingState(null);
@@ -350,7 +501,7 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
             const now = Date.now();
             if (errText === lastErrorRef.current.text && now - lastErrorRef.current.ts < 2000) break;
             lastErrorRef.current = { text: errText, ts: now };
-            setIsRunning(false);
+            if (!desktopProtocol.current) setIsRunning(false);
             setAgentStatus('');
             setStreamingState(null);
             setNetworkRetry(null);
@@ -384,11 +535,11 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
                 
                 setTimeout(() => embeddedBrowser.syncPageContent(), 1200);
                 socket?.send(JSON.stringify({
-                  action: 'embedded_navigate_ack',
+                  action: 'embedded_navigate_ack', requestId: data.requestId,
                   url: embeddedBrowser.getActiveUrl()
                 }));
               } catch (e: any) {
-                socket?.send(JSON.stringify({ action: 'embedded_navigate_ack', error: String(e?.message || e) }));
+                socket?.send(JSON.stringify({ action: 'embedded_navigate_ack', requestId: data.requestId, error: String(e?.message || e) }));
               }
             })();
             break;
@@ -397,7 +548,7 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
             (async () => {
               await embeddedBrowser.syncPageContent();
               socket?.send(JSON.stringify({
-                action: 'embedded_read_ack',
+                action: 'embedded_read_ack', requestId: data.requestId,
                 url: embeddedBrowser.getActiveUrl()
               }));
             })();
@@ -407,16 +558,26 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
             pushTerm({ type: data.isErr ? 'err' : 'out', text: String(data.line ?? '') });
             break;
           case 'terminal_echo':
+            activeCommand.current = data.commandId || null;
+            setCommandId(activeCommand.current);
             pushTerm({ type: 'echo', cwd: data.cwd || '', command: String(data.command ?? '') });
+            if (isAndroid) {
+              setTermCwd(data.cwd || '');
+              onOpenRightTab('terminal');
+            }
             break;
           case 'terminal_prompt':
+            activeCommand.current = null;
+            setCommandId(null);
             setTermCwd(typeof data.cwd === 'string' ? data.cwd : '');
             break;
           case 'terminal_clear':
             setTermLines([]);
             break;
           case 'terminal_exit':
-            pushTerm({ type: 'sys', text: `[powershell exited — code ${data.code ?? 0}]` });
+            pushTerm({ type: 'sys', text: isAndroid
+              ? `Command ${String(data.status || 'failed').replace(/_/g, ' ')}${data.code == null ? '' : ` · Exit code ${data.code}`}`
+              : `[powershell exited — code ${data.code ?? 0}]` });
             break;
           case 'patch_applied':
             setPatchHistory(prev => [...prev, ...(data.details || []).map((d: any) => ({ ...d, ts: Date.now() }))].slice(-60));
@@ -430,7 +591,7 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
             setSessions(data.sessions || []);
             setCurrentSessionId(null);
             setMessages([]);
-            setIsRunning(false);
+            if (!activeRun.current) setIsRunning(false);
             setAgentStatus('');
             setStreamingState(null);
             setNetworkRetry(null);
@@ -465,6 +626,7 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
             localStorage.setItem('magnum_chatgpt_think', data.enabled ? '1' : '0');
             break;
           case 'older_messages_loaded':
+            if (data.session?.id !== currentSessionIdRef.current) break;
             setIsLoadingOlder(false);
             setMessages(prev => {
               const older = resolveAtts(Array.isArray(data.session?.messages) ? data.session.messages : []);
@@ -485,11 +647,11 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
             break;
           case 'patch_proposed':
             setPendingPatches(Array.isArray(data.summaries) ? data.summaries : []);
-            onOpenRightTab('changes');
+            onOpenRightTab('review');
             break;
           case 'command_proposed':
             setPendingCommand(typeof data.command === 'string' ? data.command : null);
-            onOpenRightTab('changes');
+            onOpenRightTab('review');
             break;
           case 'command_result':
             setPendingCommand(null);
@@ -521,7 +683,17 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
         }
       };
       socket.onclose = () => {
-        if (disposed) return; 
+        if (disposed) return;
+        setEngineConnected(false);
+        for (const settle of inspectorReplies.current.values()) settle();
+        setAccess({ status: 'disconnected', detail: 'Engine reconnecting…' });
+        activeCommand.current = activeRun.current = pendingRequest.current = null;
+        setCommandId(null);
+        setRunId(null);
+        setNetworkRetry(null);
+        setStreamingState(null);
+        setPendingCommand(null);
+        setPendingPatches([]);
         setConnectionStatus('disconnected');
         setIsRunning(false);
         setAgentStatus('Engine disconnected — reconnecting...');
@@ -544,13 +716,29 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
 
   const sendAction = useCallback((action: string, payload: Record<string, any> = {}) => {
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ action, ...payload }));
+      const target = ['approve_command', 'reject_command', 'approve_patch', 'reject_patch'].includes(action) ? { runId } : {};
+      ws.send(JSON.stringify({ action, ...target, ...payload }));
     } else {
       console.warn('[ws] sendAction dropped — socket not open:', action);
     }
-  }, [ws]);
+  }, [ws, runId]);
 
   useEffect(() => { sendActionRef.current = sendAction; }, [sendAction]);
+
+  const requestInspector = useCallback(<T,>(action: string, fields: Record<string, unknown>): Promise<T | undefined> => {
+    if (ws?.readyState !== WebSocket.OPEN) return Promise.resolve(undefined);
+    return new Promise(resolve => {
+      const requestId = String(++inspectorSequence.current);
+      const settle = (reply?: T) => {
+        clearTimeout(timer);
+        inspectorReplies.current.delete(requestId);
+        resolve(reply);
+      };
+      const timer = setTimeout(settle, 12000);
+      inspectorReplies.current.set(requestId, settle);
+      ws.send(JSON.stringify({ action, requestId, ...fields }));
+    });
+  }, [ws]);
 
   const stageAttachments = useCallback((attachments: Attachment[]) => {
     stageAtts(selectedProvider, attachments);
@@ -560,26 +748,41 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
     unstageAtt(selectedProvider, id);
   }, [selectedProvider]);
 
-  const liveAttsRef = useRef<Attachment[]>([]);
-  useEffect(() => onLiveAttachmentsChange(atts => { liveAttsRef.current = atts; }), []);
-  const lastStageProviderRef = useRef(selectedProvider);
-  useEffect(() => {
-    if (lastStageProviderRef.current === selectedProvider) return;
-    lastStageProviderRef.current = selectedProvider;
-    if (liveAttsRef.current.length) stageAtts(selectedProvider, liveAttsRef.current);
-  }, [selectedProvider]);
-
   const openWorkspace = useCallback((path: string) => {
     sendAction('open_workspace', { path });
   }, [sendAction]);
 
-  const loadSession = useCallback((id: string) => {
-    sendAction('load_session', { sessionId: id });
-    const s = sessions.find(x => x.id === id);
-    if (s && s.workspacePath && s.workspacePath !== activeWorkspace) {
-      openWorkspace(s.workspacePath);
-    }
-  }, [sendAction, sessions, activeWorkspace, openWorkspace]);
+  const navigate = useCallback((provider: ProviderId, id: string | null) => {
+    if ((isAndroid && provider !== 'deepseek') || activeRun.current || pendingRequest.current || ws?.readyState !== WebSocket.OPEN) return;
+    const session = sessions.find(item => item.id === id);
+    setSelectedProvider(provider);
+    selectedRef.current = provider;
+    setAccess({ status: 'checking', detail: '' });
+    if (id !== currentSessionIdRef.current) setMessages([]);
+    setCurrentSessionId(id);
+    currentSessionIdRef.current = id;
+    setIsLoadingOlder(false);
+    setHasMoreMessages(false);
+    setStreamingState(null);
+    const sequence = ++navigationId.current;
+    sendAction(id ? 'load_session' : 'new_chat', { provider, sessionId: id, navigationId: sequence });
+    if (!isAndroid && session?.workspacePath && session.workspacePath !== activeWorkspace) sendAction('open_workspace', { path: session.workspacePath, navigationId: sequence });
+  }, [ws, sessions, sendAction, activeWorkspace]);
+
+  const loadSession = (id: string) => navigate(sessions.find(s => s.id === id)?.provider || 'deepseek', id);
+  const selectProvider = (provider: ProviderId) => {
+    const remembered = localStorage.getItem('magnum_last_chat_' + provider);
+    navigate(provider, sessions.some(s => s.id === remembered) ? remembered : null);
+  };
+  const newChat = () => {
+    if (activeRun.current || pendingRequest.current) return;
+    localStorage.removeItem('magnum_last_chat_' + selectedProvider);
+    navigate(selectedProvider, null);
+  };
+  const reconnect = () => navigate(selectedProvider, currentSessionId);
+  const accessStatus = access.status === 'ready' && currentSessionId && desktopProtocol.current
+    && providersStatus[selectedProvider] === 'disconnected' ? 'disconnected' : access.status;
+  const sendBlocked = accessStatus !== 'ready';
 
   const setGeminiThinking = useCallback((level: 'low' | 'medium' | 'high') => {
     setGeminiThinkingLevel(level);
@@ -596,7 +799,6 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
   const setDefaultProvider = useCallback((p: ProviderId) => {
     setDefaultProviderState(p);
     localStorage.setItem('magnum_default_provider', p);
-    setSelectedProvider(p);
     sendAction('set_default_provider', { provider: p });
   }, [sendAction]);
 
@@ -615,7 +817,7 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
     skillId: string | null = null,
     autoApproveCommand: boolean = false
   ) => {
-    if ((!promptText.trim() && attachments.length === 0) || isRunning) return;
+    if ((!promptText.trim() && attachments.length === 0) || sendBlocked || isRunning || pendingRequest.current) return;
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       setMessages(prev => [...prev, {
         id: Math.random().toString(36).substring(2, 9),
@@ -638,9 +840,16 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
       ts: Date.now(),
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }]);
-    setIsRunning(true);
-    setAgentStatus('Uploading context & planning next moves...');
+    if (desktopProtocol.current) pendingRequest.current = userMsgId;
+    else setIsRunning(true);
+    if (!activityProtocol.current) {
+      localActivity.current?.start(userMsgId, currentSessionIdRef.current, selectedProvider, activeWorkspace);
+      setInspectionRevision(value => value + 1);
+    }
+    setAgentStatus(isAndroid ? 'Sending to DeepSeek…' : 'Uploading context & planning next moves...');
     sendAction('send_prompt', {
+      sessionId: currentSessionIdRef.current,
+      requestId: userMsgId,
       prompt: promptText,
       provider: selectedProvider,
       thinkingLevel: geminiThinkingRef.current,
@@ -653,19 +862,21 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
       attachments,
       skill: skillId || undefined
     });
-  }, [isRunning, isDeepThink, selectedProvider, sendAction, ws]);
+  }, [sendBlocked, isRunning, isDeepThink, selectedProvider, activeWorkspace, sendAction, ws]);
 
   const loadOlderMessages = useCallback(() => {
     if (!currentSessionId || isLoadingOlder || !hasMoreMessages) return;
     setIsLoadingOlder(true);
-    sendAction('load_older_messages', { sessionId: currentSessionId, limit: 30, offset: messages.length });
+    sendAction('load_older_messages', { navigationId: navigationId.current, sessionId: currentSessionId, limit: 30, offset: messages.length });
   }, [currentSessionId, isLoadingOlder, hasMoreMessages, messages.length, sendAction]);
 
   const requestMessageEdits = useCallback((messageId: number) => sendAction('get_message_edits', { messageId }), [sendAction]);
-  const requestEditsIds = useCallback((ids: number[]) => sendAction('get_edits_detail', { editIds: ids }), [sendAction]);
+  const requestEditsIds = useCallback((ids: number[]) => {
+    for (let i = 0; i < ids.length; i += 8) sendAction('get_edits_detail', { editIds: ids.slice(i, i + 8) });
+  }, [sendAction]);
   const sendTerminalInput = useCallback((text: string) => sendAction('terminal_input', { text }), [sendAction]);
-  const sendTerminalInterrupt = useCallback(() => sendAction('terminal_interrupt'), [sendAction]);
-  const sendTerminalRestart = useCallback(() => sendAction('terminal_restart'), [sendAction]);
+  const sendTerminalInterrupt = useCallback(() => sendAction('terminal_interrupt', { commandId }), [sendAction, commandId]);
+  const sendTerminalRestart = useCallback(() => sendAction('terminal_restart', { commandId }), [sendAction, commandId]);
 
   const browseDir = useCallback((dirPath?: string): Promise<any> => {
     return new Promise((resolve) => {
@@ -685,6 +896,7 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
 
   return {
     accountInfo,
+    inspectorCapabilities, engineConnected, inspectionRevision, requestInspector, localActivity: localActivity.current,
     activeWorkspace,
     fileTree,
     selectedFileName,
@@ -692,12 +904,19 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
     messages,
     streamingState,
     isRunning,
+    runId,
+    commandId,
     networkRetry,
     agentStatus,
     isDeepThink,
     setIsDeepThink,
     selectedProvider,
-    setSelectedProvider,
+    setSelectedProvider: selectProvider,
+    accessStatus, accessDetail: access.detail, sendBlocked,
+    accessMessage: accessStatus === 'missing' && access.detail
+      ? access.detail
+      : [accessLabels[accessStatus], access.detail].filter(Boolean).join(' '),
+    newChat, reconnect, composerSequence: navigationId.current,
     defaultProvider,
     setDefaultProvider,
     setDeepThink,
@@ -717,6 +936,7 @@ const currentSessionIdRef = useRef<string | null>(currentSessionId);
     chatgptThink,
     setChatgptThink,
     recentWorkspaces,
+    androidTools, androidWorkspaceStatus, androidRunWorkspace,
     sendAction,
     sendPrompt,
     stageAttachments,

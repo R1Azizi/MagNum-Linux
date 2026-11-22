@@ -61,6 +61,8 @@ function sendError(id, code, message, data) {
   send({ jsonrpc: '2.0', id, error: { code, message, ...(data ? { data } : {}) } });
 }
 
+const requests = new Map();
+
 async function handle(msg) {
   const { id, method, params } = msg;
   try {
@@ -81,12 +83,23 @@ async function handle(msg) {
         });
       case 'notifications/initialized':
         return; // no response for notifications
+      case 'notifications/cancelled':
+        requests.get(params?.requestId)?.abort();
+        return;
       case 'tools/list':
         return send({ jsonrpc: '2.0', id, result: { tools: TOOL_DEFS } });
       case 'tools/call': {
         const { name, arguments: args } = params || {};
-        const result = await callTool(tools, name, args || {});
-        return send({ jsonrpc: '2.0', id, result });
+        if (requests.has(id)) return sendError(id, -32600, 'Duplicate active request ID');
+        const controller = new AbortController();
+        requests.set(id, controller);
+        try {
+          const result = await callTool(tools, name, args || {}, controller.signal);
+          if (controller.signal.aborted) return;
+          return send({ jsonrpc: '2.0', id, result });
+        } finally {
+          requests.delete(id);
+        }
       }
       case 'ping':
         return send({ jsonrpc: '2.0', id, result: {} });
@@ -111,6 +124,11 @@ rl.on('line', (line) => {
   handle(msg);
 });
 
-rl.on('close', () => process.exit(0));
-process.on('SIGTERM', () => process.exit(0));
-process.on('SIGINT', () => process.exit(0));
+function stopRequests() {
+  for (const controller of requests.values()) controller.abort();
+  rl.close();
+  process.stdin.destroy();
+}
+rl.on('close', stopRequests);
+process.on('SIGTERM', stopRequests);
+process.on('SIGINT', stopRequests);

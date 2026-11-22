@@ -1,3 +1,4 @@
+const { checkConversation } = require('./conversation-access');
 'use strict';
 
 const CHATGPT_URL = 'https://chatgpt.com/';
@@ -121,7 +122,7 @@ class ChatGptDriver {
 
   abort() {
     this.isAborted = true;
-    this.clickStopButton().catch(() => {});
+    return this.clickStopButton().catch(() => {});
   }
 
   async humanClick(target) {
@@ -480,11 +481,8 @@ class ChatGptDriver {
   }
 
   async sendMessage(text, options = {}) {
+    this.assertSendTarget?.();
     if (!this.page || this.page.isClosed()) throw new Error('پنجره مرورگر ChatGPT بسته است.');
-    if (!/chatgpt\.com/.test(this.page.url())) {
-      await this.page.goto(CHATGPT_NEW_CHAT, { waitUntil: 'domcontentloaded', timeout: 25000 });
-      await this.page.waitForTimeout(1200);
-    }
 
     const auth = await this.getAuthState();
     if (auth.status === 'login_page') {
@@ -544,15 +542,18 @@ class ChatGptDriver {
 
     let sent = false;
     for (let attempt = 1; attempt <= 3 && !sent; attempt++) {
+      this.assertSendTarget?.();
       const clicked = await this.clickSendButton();
       if (!clicked) {
         await input.focus().catch(() => {});
+        this.assertSendTarget?.();
         await this.page.keyboard.press('Enter');
       }
       await this.page.waitForTimeout(800);
       sent = await isSent();
       if (!sent) {
         await input.focus().catch(() => {});
+        this.assertSendTarget?.();
         await this.page.keyboard.press('Enter');
         await this.page.waitForTimeout(700);
         sent = await isSent();
@@ -619,7 +620,7 @@ class ChatGptDriver {
         const onAuthHost = /(^|\.)auth\.openai\.com$/.test(location.hostname) || location.hostname === 'accounts.google.com';
         const loginModal = document.querySelector('#mobile-auth-dialog[open]');
         const loginBtn = document.querySelector('button[data-login-button], a[href*="/auth/login"]');
-        const needsLogin = onAuthHost || !!loginModal || /\/auth\/(login|login_with)/.test(location.pathname) || (!composerReady && !!loginBtn);
+        const needsLogin = onAuthHost || !!loginModal || /\/auth\/(login|login_with)/.test(location.pathname) || (loginBtn && visible(loginBtn));
 
         const cfTitle = /just a moment|attention required|verify you are human/i.test(document.title);
         const cfStage = document.querySelector('#challenge-stage, #turnstile-wrapper, iframe[src*="challenges.cloudflare.com"]');
@@ -853,22 +854,8 @@ class ChatGptDriver {
     } catch (e) { console.warn('parkTab warning:', e.message); }
   }
 
-  async checkChatExists(targetUrl) {
-    if (!this.page || this.page.isClosed()) return true;
-    if (!targetUrl || !targetUrl.includes('chatgpt.com/c/')) return false;
-    try {
-      if (this.page.url() !== targetUrl) {
-        await this.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-        await this.page.waitForTimeout(1500);
-      }
-      const url = this.page.url();
-      if (!url.includes('/c/')) return false;
-      return await this.page.evaluate((compSel) => {
-        const head = (document.body ? document.body.innerText : '').slice(0, 1200);
-        if (/conversation not found|may have been deleted|doesn't exist|page not found/i.test(head)) return false;
-        return !!document.querySelector(compSel);
-      }, COMPOSER_SEL);
-    } catch { return true; }
+  checkConversation(target, diagnose) {
+    return checkConversation(this.page, 'chatgpt', target, diagnose);
   }
 }
 

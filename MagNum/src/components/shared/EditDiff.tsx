@@ -12,6 +12,9 @@ export const DiffView: React.FC<{ detail?: EditDetail; legacy?: boolean }> = ({ 
     return <div style={{ padding: '6px 8px', fontSize: 11, color: 'var(--text-dim)' }}>Loading diff…</div>;
   }
   const lines = detail.diff.slice(0, MAX_RENDER_LINES);
+  if (!lines.length && !detail.truncated) {
+    return <div style={{ padding: '6px 8px', fontSize: 11, color: 'var(--text-dim)' }}>No textual difference recorded.</div>;
+  }
   return (
     <div className="code-font" style={{ fontSize: 11, lineHeight: 1.65, overflowX: 'auto', border: '1px solid var(--border-subtle)', borderRadius: 6, background: 'var(--bg-code)' }}>
       {lines.map((l, i) => (
@@ -23,7 +26,7 @@ export const DiffView: React.FC<{ detail?: EditDetail; legacy?: boolean }> = ({ 
       {detail.diff.length > MAX_RENDER_LINES && (
         <div style={{ padding: '4px 8px', fontSize: 10.5, color: 'var(--text-dim)' }}>… {detail.diff.length - MAX_RENDER_LINES} more lines hidden</div>
       )}
-      {detail.truncated && <div style={{ padding: '4px 8px', fontSize: 10.5, color: 'var(--text-dim)' }}>Diff truncated at storage time.</div>}
+      {detail.truncated && <div style={{ padding: '4px 8px', fontSize: 10.5, color: 'var(--text-dim)' }}>Diff preview truncated.</div>}
     </div>
   );
 };

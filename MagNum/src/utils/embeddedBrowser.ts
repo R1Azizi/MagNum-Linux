@@ -65,7 +65,7 @@ class EmbeddedBrowserManager {
 
       await new Promise<void>((resolve, reject) => {
         (wv as any).once('tauri://created', () => resolve()).catch(reject);
-        (wv as any).once('tauri://error', (e: any) => reject(e)).catch(reject);
+        (wv as any).once('tauri://error', (e: any) => reject(e.payload)).catch(reject);
       });
 
       this.webview = wv;
@@ -209,7 +209,7 @@ class EmbeddedBrowserManager {
 
     await new Promise<void>((resolve, reject) => {
       (newWv as any).once('tauri://created', () => resolve()).catch(reject);
-      (newWv as any).once('tauri://error', (e: any) => reject(e)).catch(reject);
+      (newWv as any).once('tauri://error', (e: any) => reject(e.payload)).catch(reject);
     });
 
     this.webview = newWv;

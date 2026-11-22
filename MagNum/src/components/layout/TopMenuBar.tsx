@@ -8,7 +8,7 @@ interface TopMenuBarProps {
   onToggleSidebar: () => void;
   onNewChat: () => void;
   onOpenFolder: () => void;
-  onToggleTab: (tab: 'changes' | 'browser' | 'terminal' | 'files') => void;
+  onToggleTab: (tab: 'activity' | 'changes' | 'review' | 'browser' | 'terminal' | 'files') => void;
   onOpenFilters: () => void;
   onDiagnose: () => void;
 }
@@ -150,6 +150,8 @@ export const TopMenuBar: React.FC<TopMenuBarProps> = ({
                 <span>Toggle Primary Sidebar</span> <span className="shortcut-text">Ctrl+B</span>
               </div>
               <div className="dropdown-divider" />
+              <div className="dropdown-item" onClick={() => onToggleTab('activity')}><span>Activity</span></div>
+              <div className="dropdown-item" onClick={() => onToggleTab('review')}><span>Edit Review</span></div>
               <div className="dropdown-item" onClick={() => onToggleTab('changes')}>
                 <span>Changes</span> <span className="shortcut-text">Ctrl+E</span>
               </div>

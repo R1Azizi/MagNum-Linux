@@ -12,6 +12,7 @@ import { RepoPickerMenu, isScratchPath } from '../shared/RepoPicker';
 
 interface LeftSidebarProps {
   activeWorkspace: string;
+  selectedProvider: string;
   sessions: SessionMeta[];
   currentSessionId: string | null;
 
@@ -40,7 +41,7 @@ const navBtn: React.CSSProperties = {
 };
 
 export const LeftSidebar: React.FC<LeftSidebarProps> = ({
-  activeWorkspace, sessions, currentSessionId, recentWorkspaces,
+  selectedProvider, activeWorkspace, sessions, currentSessionId, recentWorkspaces,
   onNewChat, onOpenFolder, onBrowseInApp, onOpenWorkspace, onStartScratch, onOpenFilters,
   onLoadSession, onDeleteSession, onDiagnose, onToggleSidebar
 }) => {
@@ -104,12 +105,12 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
   };
 
   return (
-    <aside style={{
-      width, minWidth: width, background: 'var(--bg-primary)',
+    <aside className="workspace-drawer" aria-label="Chats and workspaces" style={{
+      '--drawer-width': `${width}px`, background: 'var(--bg-primary)',
       borderRight: '1px solid var(--border-subtle)',
-      display: 'flex', flexDirection: 'column', justifyContent: 'space-between', position: 'relative'
-    }}>
-      <div onMouseDown={startResize} title="Drag to resize" style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 4, cursor: 'col-resize', zIndex: 10 }} />
+      display: 'flex', flexDirection: 'column', justifyContent: 'space-between'
+    } as React.CSSProperties}>
+      <div className="drawer-resize" onMouseDown={startResize} title="Drag to resize" style={{ position: 'absolute', right: 0, top: 0, bottom: 0, width: 4, cursor: 'col-resize', zIndex: 10 }} />
       <div style={{ display: 'flex', flexDirection: 'column', gap: 4, overflowY: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 8px 4px' }}>
           <div style={{ display: 'flex', gap: 2 }}>
@@ -123,7 +124,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
         </div>
 
         <div style={{ padding: '0 8px', display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <button onClick={onNewChat} className="hover-bright" style={{ ...navBtn, color: 'var(--text-main)', fontWeight: 600 }}>
+          <button onClick={onNewChat} title={`New Chat with ${selectedProvider}`} className="hover-bright" style={{ ...navBtn, color: 'var(--text-main)', fontWeight: 600 }}>
             <Plus size={14} color="var(--accent-green)" /> New Chat
           </button>
         </div>

@@ -1,5 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import {
+  Activity,
   ArrowDown,
   Check,
   ChevronDown,
@@ -131,7 +132,9 @@ const headerBtn: React.CSSProperties = {
 };
 
 const RAIL_TABS: { key: Exclude<RightPanelTab, null>; label: string; icon: React.ReactNode }[] = [
+  { key: 'activity', label: 'Activity', icon: <Activity size={13} /> },
   { key: 'changes', label: 'Changes', icon: <Diff size={13} /> },
+  { key: 'review', label: 'Edit Review', icon: <Check size={13} /> },
   { key: 'browser', label: 'Browser', icon: <Globe size={13} /> },
   { key: 'terminal', label: 'powershell', icon: <Terminal size={13} /> },
   { key: 'files', label: 'Files', icon: <FileText size={13} /> }

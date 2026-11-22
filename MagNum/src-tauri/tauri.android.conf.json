@@ -1,0 +1,11 @@
+{
+  "productName": "MagNum",
+  "version": "0.2.1",
+  "build": {
+    "beforeBuildCommand": "npm run build:frontend",
+    "beforeDevCommand": "npm run dev:frontend"
+  },
+  "bundle": {
+    "resources": null
+  }
+}

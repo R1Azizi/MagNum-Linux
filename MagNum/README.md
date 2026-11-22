@@ -1,7 +1,3 @@
-# Tauri + React + Typescript
+# MagNum application
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
-
-## Recommended IDE Setup
-
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+This directory contains the shared React frontend and the Tauri application for Android, Linux, and Windows. See the [repository README](../README.md) for desktop development and the [Android release guide](../docs/android-release.md) for the signed APK build.

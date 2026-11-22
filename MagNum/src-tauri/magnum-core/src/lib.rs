@@ -118,3 +118,5 @@ impl FileSystem for NullFs {
     fn write(&self, _p: &str, _c: &str) -> Result<(), String> { Err("fs not available".into()) }
     fn list(&self, _p: &str) -> Result<Vec<String>, String> { Ok(vec![]) }
 }
+
+pub mod workspace_agent;

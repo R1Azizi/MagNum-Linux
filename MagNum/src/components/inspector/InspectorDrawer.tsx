@@ -1,19 +1,24 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Editor from '@monaco-editor/react';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import {
   ArrowLeft, ArrowRight, RotateCw, Globe, Maximize2, Minimize2, Search,
-  Diff, Terminal, FileText, Plus, PanelRight, Trash2,
+  Activity, Diff, Terminal, FileText, Plus, PanelRight, Trash2,
   ChevronDown, ChevronRight, Check, RotateCcw, GitBranch, MoreHorizontal, X
 } from 'lucide-react';
 import { RightPanelTab, FileNode, EditSummary, EditDetail, ChatMessage, DiffLineData } from '../../types';
 import { getFileLanguage } from '../../utils/language';
 import { Language, translations } from '../../i18n/translations';
 import { embeddedBrowser } from '../../utils/embeddedBrowser';
+import { isAndroid } from '../../utils/platform';
+import { alertDialog } from '../modals/AppDialog';
+import { ActivityPanel, InspectionContext, useInspectionRuns, WorkspaceChangesPanel } from './RunInspection';
 
 type PanelKey = Exclude<RightPanelTab, null>;
 
 interface InspectorDrawerProps {
   tab: RightPanelTab;
+  inspection: InspectionContext;
   openTabs?: PanelKey[];
   onSelectTab: (tab: PanelKey) => void;
   onCloseTab: (tab: PanelKey) => void;
@@ -23,7 +28,7 @@ interface InspectorDrawerProps {
   onRequestEditsIds?: (ids: number[]) => void;
   messages: ChatMessage[];
   revertedIds: number[];
-  onRevertEdits: (ids: number[]) => void;
+  onRevertEdits?: (ids: number[]) => void;
   fileTree: FileNode[];
   selectedFileName: string;
   selectedFileContent: string | null;
@@ -44,17 +49,25 @@ interface InspectorDrawerProps {
   termCwd: string;
   onTerminalInput: (text: string) => void;
   onTerminalInterrupt: () => void;
+  terminalRunning: boolean;
+  androidRunWorkspace?: string;
+  androidCommandHelp?: string;
+  onStopRun?: () => void;
   onTerminalRestart: () => void;
 }
 
 const PANEL_TABS: { key: PanelKey; label: string; icon: React.ReactNode }[] = [
+  { key: 'activity', label: 'Activity', icon: <Activity size={12} /> },
   { key: 'changes', label: 'Changes', icon: <Diff size={12} /> },
+  { key: 'review', label: 'Edit Review', icon: <Check size={12} /> },
   { key: 'browser', label: 'Browser', icon: <Globe size={12} /> },
   { key: 'terminal', label: 'powershell', icon: <Terminal size={12} /> },
   { key: 'files', label: 'Files', icon: <FileText size={12} /> }
 ];
 
 const PANEL_MENU_ITEMS: { key: PanelKey; label: string; icon: React.ReactNode; shortcut: string }[] = [
+  { key: 'activity', label: 'Activity', icon: <Activity size={14} />, shortcut: '' },
+  { key: 'review', label: 'Edit Review', icon: <Check size={14} />, shortcut: '' },
   { key: 'files', label: 'Files', icon: <FileText size={14} />, shortcut: 'Ctrl+G' },
   { key: 'terminal', label: 'powershell', icon: <Terminal size={14} />, shortcut: 'Ctrl+J' },
   { key: 'browser', label: 'Browser', icon: <Globe size={14} />, shortcut: 'Ctrl+Shift+B' },
@@ -167,14 +180,17 @@ const FileTreeNode: React.FC<{ node: FileNode; depth: number; selected: string; 
   const [open, setOpen] = useState(false);
   return (
     <div>
-      <div
+      <button
+        type="button"
+        aria-expanded={node.isDir ? open : undefined}
+        aria-current={!node.isDir && selected === node.relPath ? 'true' : undefined}
         onClick={() => (node.isDir ? setOpen(o => !o) : onOpen(node.relPath))}
         className="hover-bright"
-        style={{ display: 'flex', alignItems: 'center', gap: 5, padding: '3px 6px', paddingLeft: 6 + depth * 10, borderRadius: 4, cursor: 'pointer', fontSize: 11.5, color: selected === node.relPath ? 'var(--accent-green)' : 'var(--text-muted)', background: selected === node.relPath ? 'var(--accent-green-dim)' : 'transparent' }}
+        style={{ display: 'flex', alignItems: 'center', width: '100%', textAlign: 'start', border: 0, minHeight: isAndroid ? 44 : undefined, gap: 5, padding: '3px 6px', paddingLeft: 6 + depth * 10, borderRadius: 4, cursor: 'pointer', fontSize: 11.5, color: selected === node.relPath ? 'var(--accent-green)' : 'var(--text-muted)', background: selected === node.relPath ? 'var(--accent-green-dim)' : 'transparent' }}
       >
-        <span style={{ color: 'var(--text-dim)', fontSize: 10 }}>{node.isDir ? (open ? '▾' : '▸') : '•'}</span>
+        <span aria-hidden="true" style={{ color: 'var(--text-dim)', fontSize: 10 }}>{node.isDir ? (open ? '▾' : '▸') : '•'}</span>
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{node.name}</span>
-      </div>
+      </button>
       {node.isDir && open && (node.children || []).map(c => (
         <FileTreeNode key={c.relPath} node={c} depth={depth + 1} selected={selected} onOpen={onOpen} />
       ))}
@@ -184,6 +200,61 @@ const FileTreeNode: React.FC<{ node: FileNode; depth: number; selected: string; 
 
 const navBtnStyle: React.CSSProperties = { background: 'transparent', border: 'none', color: 'var(--text-muted)', padding: 4, borderRadius: 6, cursor: 'pointer', display: 'flex', flexShrink: 0 };
 
+
+const PROVIDER_SIGN_IN = [
+  { label: 'DeepSeek', url: 'https://chat.deepseek.com/sign_in' },
+  { label: 'Gemini', url: 'https://aistudio.google.com/' },
+  { label: 'ChatGPT', url: 'https://chatgpt.com/auth/login' }
+];
+
+function browserError(error: unknown): string {
+  if (typeof error === 'string' && error) return error;
+  if (error instanceof Error && error.message) return error.message;
+  return 'The browser could not be opened.';
+}
+
+async function openAndroidBrowser(input: string) {
+  const url = new URL(embeddedBrowser.buildUrl(input));
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error('Enter an HTTP or HTTPS address.');
+  }
+  await openUrl(url.href, 'inAppBrowser');
+}
+
+const AndroidBrowserPanel: React.FC = () => {
+  const [address, setAddress] = useState('');
+  const [error, setError] = useState('');
+
+  const open = async (input: string) => {
+    setError('');
+    try {
+      await openAndroidBrowser(input);
+    } catch (err) {
+      setError(browserError(err));
+    }
+  };
+
+  return (
+    <div className="android-browser-panel">
+      <form aria-label="Open a web page" onSubmit={(event) => {
+        event.preventDefault();
+        if (address.trim()) void open(address);
+      }}>
+        <input aria-label="Address or search" placeholder="Search or enter a URL" value={address}
+          onChange={(event) => setAddress(event.target.value)} type="text" inputMode="url" enterKeyHint="go" />
+        <button className="prompt-chip" type="submit" disabled={!address.trim()}>Open</button>
+      </form>
+      <h2>Provider sign-in</h2>
+      <p>The browser keeps your provider session. MagNum chat still requires an Android backend.</p>
+      <div className="provider-sign-in-links">
+        {PROVIDER_SIGN_IN.map(({ label, url }) => (
+          <button key={label} className="prompt-chip" onClick={() => void open(url)}>Sign in to {label}</button>
+        ))}
+      </div>
+      {error && <p role="alert">{error}</p>}
+    </div>
+  );
+};
 
 const BrowserPanel: React.FC = () => {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -203,7 +274,7 @@ const BrowserPanel: React.FC = () => {
       setReady(true);
       setError(null);
     } catch (e: any) {
-      setError(String(e?.message || e));
+      setError(browserError(e));
     }
   });
 
@@ -220,7 +291,7 @@ const BrowserPanel: React.FC = () => {
             await embeddedBrowser.reconnect({ x: r.left, y: r.top, width: r.width, height: r.height });
             if (alive) { setReady(true); setError(null); }
           } catch (e: any) {
-            if (alive) setError(String(e?.message || e));
+            if (alive) setError(browserError(e));
           }
         }
       }
@@ -260,7 +331,7 @@ const BrowserPanel: React.FC = () => {
       await embeddedBrowser.navigate(v);
       setError(null);
     } catch (e: any) {
-      setError(String(e?.message || e));
+      setError(browserError(e));
     }
   };
 
@@ -281,8 +352,6 @@ const BrowserPanel: React.FC = () => {
         />
         <button className="hover-bright" onClick={submit} title="Go" style={navBtnStyle}><Search size={13} /></button>
       </div>
-      {}
-      {}
       <div ref={hostRef} style={{ flex: 1, position: 'relative', background: 'var(--bg-editor)', overflow: 'hidden', marginLeft: 6 }}>
         {!ready && !error && (
           <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, background: 'var(--bg-topbar)', color: 'var(--text-dim)', fontSize: 12, textAlign: 'center', padding: 20 }}>
@@ -295,7 +364,7 @@ const BrowserPanel: React.FC = () => {
           <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, background: 'var(--bg-topbar)', color: 'var(--diff-del-text)', fontSize: 12, textAlign: 'center', padding: 24 }}>
             <Globe size={28} color="var(--diff-del-text)" />
             <span style={{ fontWeight: 700 }}>Embedded webview failed to start</span>
-            <span style={{ fontSize: 11, lineHeight: 1.7, maxWidth: 340 }}>{error}<br />Check Tauri capabilities (core:webview:allow-create-webview …) in src-tauri/capabilities/default.json</span>
+            <span style={{ fontSize: 11, lineHeight: 1.7, maxWidth: 340 }}>{error}</span>
           </div>
         )}
       </div>
@@ -371,7 +440,7 @@ const ChangesPanel: React.FC<{
   editDetails: Record<number, EditDetail>;
   onRequestEditsIds?: (ids: number[]) => void;
   revertedIds: number[];
-  onRevertEdits: (ids: number[]) => void;
+  onRevertEdits?: (ids: number[]) => void;
   onApproveAll: () => void;
   onRejectAll: () => void;
   pendingCommand: string | null;
@@ -415,6 +484,14 @@ const ChangesPanel: React.FC<{
     () => pendingPatches.filter(p => p.id != null).map(p => ({ id: p.id as number, file: p.file, added: p.added || 0, deleted: p.deleted || 0 })),
     [pendingPatches]
   );
+  useEffect(() => {
+    if (isAndroid && pendingRefs.length) {
+      setScope('pending');
+      setOpenFiles(Object.fromEntries(pendingRefs.map(edit => [edit.file, true])));
+    } else if (isAndroid) {
+      setScope(current => current === 'pending' ? 'all' : current);
+    }
+  }, [pendingRefs]);
   const scopeEdits = scope === 'pending' ? pendingRefs : scope === 'last' ? liveLast : liveAll;
 
   useEffect(() => {
@@ -538,7 +615,7 @@ const ChangesPanel: React.FC<{
           <button
             onClick={() => {
               const ids = scopeEdits.filter(e => selectedFiles.includes(e.file)).map(e => e.id);
-              onRevertEdits(ids);
+              onRevertEdits?.(ids);
               setSelectedFiles([]);
             }}
             style={{ background: '#ef4444', border: 'none', color: '#fff', padding: '4px 12px', borderRadius: 7, cursor: 'pointer', fontSize: 11.5, fontWeight: 700, flexShrink: 0 }}
@@ -661,7 +738,7 @@ const ChangesPanel: React.FC<{
                   <span className="code-font" style={{ fontSize: 11, color: 'var(--diff-add-text)', flexShrink: 0 }}>+{added}</span>
                   {deleted > 0 && <span className="code-font" style={{ fontSize: 11, color: 'var(--diff-del-text)', flexShrink: 0 }}>-{deleted}</span>}
                   <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                    {scope !== 'pending' && (
+                    {scope !== 'pending' && onRevertEdits && (
                       <>
                         <button title="Revert changes in this file" className="hover-bright" onClick={(e) => { e.stopPropagation(); onRevertEdits(ids); }} style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', padding: 3, borderRadius: 5 }}>
                           <RotateCcw size={12} />
@@ -736,7 +813,7 @@ const termLineColor = (text: string): string => {
 const termIconBtn: React.CSSProperties = { background: 'transparent', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', padding: 4, borderRadius: 5 };
 const TermPrompt: React.FC<{ cwd: string; command?: string; caret?: boolean }> = ({ cwd, command, caret }) => (
   <span>
-    <span style={{ color: 'var(--term-prompt)', fontWeight: 600 }}>PS {cwd}&gt; </span>
+    <span style={{ color: 'var(--term-prompt)', fontWeight: 600 }}>{isAndroid ? '' : 'PS '}{cwd}&gt; </span>
     <span style={{ color: 'var(--term-cmd)' }}>{command ?? ''}</span>
     {caret && <span className="term-block-caret" />}
   </span>
@@ -746,8 +823,10 @@ const LiveTerminalPanel: React.FC<{
   cwd: string;
   onInput: (t: string) => void;
   onInterrupt: () => void;
+  running: boolean;
   onRestart: () => void;
-}> = ({ lines, cwd, onInput, onInterrupt, onRestart }) => {
+  help?: string;
+}> = ({ lines, cwd, onInput, onInterrupt, onRestart, running, help }) => {
   const [input, setInput] = useState('');
   const [history, setHistory] = useState<string[]>([]);
   const [histIdx, setHistIdx] = useState(-1);
@@ -759,7 +838,7 @@ const LiveTerminalPanel: React.FC<{
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      focusTerminal();
+      if (!isAndroid) focusTerminal();
     }, 50);
     return () => clearTimeout(timer);
   }, []);
@@ -803,20 +882,24 @@ const LiveTerminalPanel: React.FC<{
     >
       <div style={{ height: 34, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 10px', borderBottom: '1px solid var(--border-subtle)' }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-muted)', fontWeight: 600, minWidth: 0 }}>
-          <Terminal size={12} style={{ flexShrink: 0, color: 'var(--accent-green)' }} /> powershell
+          <Terminal size={12} style={{ flexShrink: 0, color: 'var(--accent-green)' }} /> {isAndroid ? 'Command output' : 'powershell'}
           <span className="code-font" dir="ltr" style={{ color: 'var(--text-dim)', fontWeight: 400, maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cwd}</span>
         </span>
         <span style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-          <button className="hover-bright" title="Clear (cls)" onClick={(e) => { e.stopPropagation(); onInput('cls'); focusTerminal(); }} style={termIconBtn}><Trash2 size={12} /></button>
-          <button className="hover-bright" title="Restart shell" onClick={(e) => { e.stopPropagation(); onRestart(); focusTerminal(); }} style={termIconBtn}><RotateCw size={12} /></button>
+          {!isAndroid && <button className="hover-bright" title="Clear (cls)" onClick={(e) => { e.stopPropagation(); onInput('cls'); focusTerminal(); }} style={termIconBtn}><Trash2 size={12} /></button>}
+          {running && <button type="button" title="Stop command" onClick={onInterrupt} style={termIconBtn}>Stop</button>}
+          {!isAndroid && <button className="hover-bright" title="Restart shell" onClick={(e) => { e.stopPropagation(); onRestart(); focusTerminal(); }} style={termIconBtn}><RotateCw size={12} /></button>}
         </span>
       </div>
+      {isAndroid && <p style={{ margin: '8px 12px', fontSize: 12, color: 'var(--text-muted)' }}>
+        {help || 'No Android command tool is available.'} Ask the agent to run a test. Stop cancels the command and its run.
+      </p>}
       <div
         ref={scrollRef}
         tabIndex={0}
-        autoFocus
-        onKeyDown={handleKey}
-        onPaste={handlePaste}
+        autoFocus={!isAndroid}
+        onKeyDown={isAndroid ? undefined : handleKey}
+        onPaste={isAndroid ? undefined : handlePaste}
         className="code-font selectable-text"
         style={{ flex: 1, overflowY: 'auto', padding: '8px 12px', fontSize: 12, lineHeight: 1.7, outline: 'none', cursor: 'text' }}
       >
@@ -825,20 +908,22 @@ const LiveTerminalPanel: React.FC<{
           if (l.type === 'sys') return <div key={i} style={{ color: 'var(--text-dim)', fontStyle: 'italic' }}>{l.text}</div>;
           return <div key={i} style={{ color: l.type === 'err' ? 'var(--diff-del-text)' : termLineColor(l.text || ''), whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{l.text || ' '}</div>;
         })}
-        <div style={{ whiteSpace: 'pre-wrap' }}><TermPrompt cwd={cwd} command={input} caret /></div>
+        {!isAndroid && <div style={{ whiteSpace: 'pre-wrap' }}><TermPrompt cwd={cwd} command={input} caret /></div>}
       </div>
     </div>
   );
 };
 
 export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
-  tab, openTabs = [], onSelectTab, onCloseTab, onAddTab,
+  tab, inspection, openTabs = [], onSelectTab, onCloseTab, onAddTab,
   pendingPatches, editDetails = {}, onRequestEditsIds, messages, revertedIds, onRevertEdits, fileTree, selectedFileName, selectedFileContent,
   onClose, onApprovePatch, onRejectPatch, onOpenFile,
   pendingCommand, onApproveCommand, onRejectCommand, lang = 'en',
-  termLines, termCwd, onTerminalInput, onTerminalInterrupt, onTerminalRestart
+  termLines, termCwd, terminalRunning, onTerminalInput, onTerminalInterrupt, onTerminalRestart,
+  androidRunWorkspace, androidCommandHelp, onStopRun
 }) => {
   const [width, setWidth] = useState(440);
+  const runInspection = useInspectionRuns(inspection, tab === 'activity' || tab === 'changes');
   const [addMenuPos, setAddMenuPos] = useState<{ top: number; left: number } | null>(null);
   const plusBtnRef = useRef<HTMLButtonElement>(null);
 
@@ -848,6 +933,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
   
   
   useEffect(() => {
+    if (isAndroid) return;
     if (addMenuPos) {
       embeddedBrowser.beginResize(); 
     } else {
@@ -859,7 +945,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
   
 
   useEffect(() => {
-    if (tab === 'changes' && pendingPatches.length && onRequestEditsIds) {
+    if (tab === 'review' && pendingPatches.length && onRequestEditsIds) {
       const missing = pendingPatches.filter(p => p.id != null && !editDetails[p.id]).map(p => p.id);
       if (missing.length) onRequestEditsIds(missing);
     }
@@ -888,6 +974,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
   
   
   useEffect(() => {
+    if (isAndroid) return;
     if (tab !== 'browser') {
       embeddedBrowser.hide();
     }
@@ -901,21 +988,19 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
   const tabs: PanelKey[] = openTabs.includes(tab) ? openTabs : [...openTabs, tab];
 
   return (
-    <aside style={{
-      width,
-      minWidth: width,
+    <aside className="inspector-drawer" aria-label="Inspector" style={{
+      '--drawer-width': `${width}px`,
       borderLeft: '1px solid var(--border-subtle)',
       background: 'var(--bg-topbar)',
       display: 'flex',
       flexDirection: 'column',
-      overflow: 'hidden',
-      position: 'relative'
-    }}>
-      <div onMouseDown={startDrag} title="Drag to resize" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, cursor: 'col-resize', zIndex: 10 }} />
+      overflow: 'hidden'
+    } as React.CSSProperties}>
+      <div className="drawer-resize" onMouseDown={startDrag} title="Drag to resize" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, cursor: 'col-resize', zIndex: 10 }} />
 
       {}
       <div style={{ height: 40, borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 8px 0 10px', flexShrink: 0, gap: 6 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 2, flex: 1, minWidth: 0, overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 2, flex: 1, minWidth: 0, overflowX: 'auto', scrollbarWidth: 'none' }}>
           {tabs.map(k => {
             const def = PANEL_TABS.find(p => p.key === k)!;
             const active = k === tab;
@@ -951,7 +1036,7 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
               setAddMenuPos(cur => (cur ? null : { top: r.bottom + 6, left: Math.max(8, Math.min(r.left - 4, window.innerWidth - 292)) }));
             }}
             title="Open panel, file, or URL"
-            className="hover-bright"
+            className="hover-bright drawer-control"
             style={{
               background: addMenuPos ? 'var(--bg-surface-hover)' : 'transparent',
               border: 'none',
@@ -966,19 +1051,27 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
           <button
             onClick={() => setWidth(w => w > 500 ? 440 : Math.round(window.innerWidth * 0.62))}
             title={width > 500 ? 'Restore panel width' : 'Expand panel (Cursor style)'}
-            className="hover-bright"
+            className="hover-bright drawer-resize"
             style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', padding: 2 }}
           >
             {width > 500 ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
           </button>
-          <button onClick={onClose} title="Collapse panel" className="hover-bright" style={{ background: 'transparent', border: 'none', color: 'var(--accent-green)', cursor: 'pointer', display: 'flex', padding: 2 }}>
+          <button onClick={onClose} title="Collapse panel" className="hover-bright drawer-control" style={{ background: 'transparent', border: 'none', color: 'var(--accent-green)', cursor: 'pointer', display: 'flex', padding: 2 }}>
             <PanelRight size={13} />
           </button>
         </div>
       </div>
 
       <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        {tab === 'changes' && (
+        {tab === 'activity' && <ActivityPanel state={runInspection} />}
+        {tab === 'changes' && <WorkspaceChangesPanel context={inspection} state={runInspection} editDetails={editDetails} requestEdits={onRequestEditsIds} />}
+        {tab === 'review' && isAndroid && androidRunWorkspace && (
+          <div className="mobile-provider-status">
+            <p>Workspace {androidRunWorkspace.split('/').pop()}</p>
+            <button className="prompt-chip" onClick={onStopRun}>Stop run</button>
+          </div>
+        )}
+        {tab === 'review' && (
           <ChangesPanel
             messages={messages}
             pendingPatches={pendingPatches}
@@ -994,26 +1087,31 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
             lang={lang}
           />
         )}
-        {tab === 'browser' && <BrowserPanel />}
+        {tab === 'browser' && (isAndroid ? <AndroidBrowserPanel /> : <BrowserPanel />)}
         {tab === 'terminal' && (
-          <LiveTerminalPanel lines={termLines} cwd={termCwd} onInput={onTerminalInput} onInterrupt={onTerminalInterrupt} onRestart={onTerminalRestart} />
+          <LiveTerminalPanel running={terminalRunning} lines={termLines} cwd={termCwd} onInput={onTerminalInput} onInterrupt={onTerminalInterrupt} onRestart={onTerminalRestart} help={androidCommandHelp} />
         )}
         {tab === 'files' && (
           <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-            <div style={{ width: 190, minWidth: 190, borderRight: '1px solid var(--border-subtle)', overflowY: 'auto', padding: '6px 4px' }}>
+            <div style={{ flex: isAndroid ? '0 0 min(190px, 40%)' : '0 0 190px', minWidth: 0, borderRight: '1px solid var(--border-subtle)', overflowY: 'auto', padding: '6px 4px' }}>
+              {isAndroid && !fileTree.length && <p>No files to display.</p>}
               {fileTree.map(n => (
                 <FileTreeNode key={n.relPath} node={n} depth={0} selected={selectedFileName} onOpen={onOpenFile} />
               ))}
             </div>
-            <div style={{ flex: 1 }}>
-              <Editor
+            <div style={{ flex: 1, minWidth: 0 }}>
+              {isAndroid ? (
+                <pre className="code-font selectable-text" style={{ margin: 0, padding: 8, overflow: 'auto', height: '100%' }}>
+                  {selectedFileContent ?? 'Tap a file to inspect'}
+                </pre>
+              ) : <Editor
                 height="100%"
                 theme="vs-dark"
                 path={selectedFileName}
                 language={getFileLanguage(selectedFileName)}
                 value={selectedFileContent || '// Click a file to inspect'}
                 options={{ readOnly: true, minimap: { enabled: false }, fontSize: 12, fontFamily: "'JetBrains Mono', Consolas, monospace", scrollBeyondLastLine: false, automaticLayout: true }}
-              />
+              />}
             </div>
           </div>
         )}
@@ -1027,7 +1125,11 @@ export const InspectorDrawer: React.FC<InspectorDrawerProps> = ({
           fileTree={fileTree}
           onAddTab={onAddTab}
           onOpenFile={onOpenFile}
-          onOpenUrl={(q) => { onAddTab('browser'); embeddedBrowser.navigate(q); }}
+          onOpenUrl={(q) => {
+            onAddTab('browser');
+            const opening = isAndroid ? openAndroidBrowser(q) : embeddedBrowser.navigate(q);
+            void opening.catch(error => alertDialog({ title: 'Could not open browser', message: browserError(error) }));
+          }}
           onClose={() => setAddMenuPos(null)}
         />
       )}

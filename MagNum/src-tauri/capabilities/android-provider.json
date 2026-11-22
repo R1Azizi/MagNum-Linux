@@ -1,0 +1,7 @@
+{
+  "identifier": "android-provider",
+  "description": "Allow the main MagNum window to drive its Android provider browser",
+  "platforms": ["android"],
+  "webviews": ["main"],
+  "permissions": ["android-provider:default"]
+}

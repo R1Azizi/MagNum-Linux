@@ -11,6 +11,7 @@ magnum-profile/
 target/
 **/target/
 installer/dist/
+/release/
 
 # Tauri generated files
 installer/src-tauri/gen/
@@ -33,3 +34,4 @@ Desktop.ini
 .idea/
 # Generated Linux binary (built by MagNum/scripts/build-fs.js)
 MagNum/src-tauri/resources/backend/magnum-fs
+MagNum/src-tauri/resources/backend/owned-shell

@@ -1,9 +1,9 @@
 'use strict';
 
-// Per-OS helpers for the backend. Every win32 branch is the original Windows
-// code moved here unchanged; the Linux/macOS branches are additions.
+// Per-OS helpers for the desktop backend.
 
 const fsSync = require('node:fs');
+const path = require('node:path');
 const { exec, execFile, spawn } = require('node:child_process');
 
 const IS_WIN = process.platform === 'win32';
@@ -22,25 +22,50 @@ const commandShell = !IS_WIN && fsSync.existsSync('/bin/bash') ? '/bin/bash' : u
 function spawnTerminal(cmd, cwd, TERM_MARK) {
   if (IS_WIN) {
     const wrapped = `${cmd}\r\nWrite-Host ('${TERM_MARK}PS1${TERM_MARK}'+(Get-Location).Path+'${TERM_MARK}'+$(if($?){0}else{1})+'${TERM_MARK}')`;
-    return spawn('powershell.exe', ['-NoProfile', '-NoLogo', '-Command', wrapped], {
-      cwd,
-      env: { ...process.env, NO_COLOR: '1' },
-      windowsHide: true,
-    });
+    return spawnOwnedShell(wrapped, cwd, 'terminal', { NO_COLOR: '1' });
   }
   // An EXIT trap prints the marker even after `exit N` or a syntax error.
   // TERM_MARK is passed via the environment so no escaping is needed.
   const trap = `trap '__mg_rc=$?; printf "%sPS1%s%s%s%s%s\\n" "$__MG_M" "$__MG_M" "$PWD" "$__MG_M" "$([ "$__mg_rc" -eq 0 ] && echo 0 || echo 1)" "$__MG_M"' EXIT`;
-  const child = spawn('bash', ['-c', `${trap}\n${cmd}`], {
-    cwd: cwd || undefined,
-    env: { ...process.env, NO_COLOR: '1', __MG_M: TERM_MARK },
-    detached: true, // own process group, so kill() also stops what the command started
-  });
-  const killOne = child.kill.bind(child);
-  child.kill = (sig = 'SIGTERM') => {
-    try { process.kill(-child.pid, sig); return true; } catch { return killOne(sig); }
-  };
-  return child;
+  return spawnOwnedShell(`${trap}\n${cmd}`, cwd, 'terminal', { NO_COLOR: '1', __MG_M: TERM_MARK });
+}
+
+function spawnOwnedShell(command, cwd, mode = 'command', extraEnv = {}) {
+  const shell = IS_WIN ? 'powershell.exe' : commandShell || '/bin/sh';
+  const args = IS_WIN
+    ? ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'owned-shell.ps1')]
+    : ['-c', command];
+  const env = { ...process.env, ...extraEnv };
+  if (IS_WIN) Object.assign(env, { MAGNUM_SHELL_INPUT: command, MAGNUM_SHELL_MODE: mode });
+  const linux = process.platform === 'linux';
+  // Fall back to /bin/sh if the owned-shell supervisor is missing or not
+  // executable (e.g. dev trees where build-fs has not run yet).
+  let useOwned = linux;
+  if (linux) {
+    try { fsSync.accessSync(path.join(__dirname, 'owned-shell'), fsSync.constants.X_OK); }
+    catch { useOwned = false; }
+  }
+  const child = spawn(useOwned ? path.join(__dirname, 'owned-shell') : shell,
+    useOwned ? [shell, command] : args, {
+      cwd, env, detached: !IS_WIN, windowsHide: true, stdio: [useOwned ? 'pipe' : 'ignore', 'pipe', 'pipe']
+    });
+  let stopped = false;
+  function stop() {
+    if (stopped || !child.pid) return;
+    stopped = true;
+    if (useOwned && child.stdin) child.stdin.end();
+    else if (IS_WIN) child.kill('SIGKILL');
+    else {
+      try { process.kill(-child.pid, 'SIGKILL'); }
+      catch (err) { if (err.code !== 'ESRCH') throw err; }
+    }
+  }
+  // A background child can outlive its shell and keep its pipes open.
+  if (!useOwned && !IS_WIN) child.once('exit', stop);
+  let failure;
+  child.once('error', err => { failure = err; });
+  const done = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal, failure })));
+  return { child, stop, done };
 }
 
 // ------------------------------------------------------------ folder picker
@@ -219,4 +244,4 @@ const osPromptHint = IS_WIN ? {
   pathExample: IS_MAC ? '/Users/me/OtherProject' : '/home/me/OtherProject',
 };
 
-module.exports = { commandShell, spawnTerminal, pickFolder, revealInFileManager, setBrowserVisibility, osPromptHint };
+module.exports = { spawnOwnedShell, commandShell, spawnTerminal, pickFolder, revealInFileManager, setBrowserVisibility, osPromptHint };

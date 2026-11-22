@@ -7,6 +7,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const { remoteProvider, conversationPath } = require('./conversation-access');
 
 const BASE_DIR = process.env.MAGNUM_DATA_DIR ||
   (process.env.APPDATA ? path.join(process.env.APPDATA, 'MagNum') : path.join(os.homedir(), '.magnum'));
@@ -62,6 +63,26 @@ function ensureSchema() {
       timestamp  TEXT,
       FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
     );
+    CREATE TABLE IF NOT EXISTS runs (
+      id TEXT PRIMARY KEY,
+      session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL,
+      workspace_path TEXT,
+      started_at INTEGER NOT NULL,
+      ended_at INTEGER,
+      outcome TEXT,
+      step TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS run_activity (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      ts INTEGER NOT NULL,
+      data TEXT NOT NULL,
+      output TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_runs_session ON runs(session_id, started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_run_activity ON run_activity(run_id, id);
+    CREATE INDEX IF NOT EXISTS idx_run_activity_output ON run_activity(id) WHERE output IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id);
     CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
   `);
@@ -71,6 +92,15 @@ function ensureSchema() {
     db.prepare('SELECT provider FROM sessions LIMIT 1').get();
   } catch {
     try { db.exec('ALTER TABLE sessions ADD COLUMN provider TEXT'); } catch {}
+  }
+
+  const columns = db.prepare('PRAGMA table_info(sessions)').all();
+  for (const name of ['account_key', 'account_identity', 'conversation_url']) {
+    if (!columns.some(column => column.name === name)) db.exec('ALTER TABLE sessions ADD COLUMN ' + name + ' TEXT');
+  }
+
+  if (!db.prepare('PRAGMA table_info(runs)').all().some(column => column.name === 'workspace_path')) {
+    db.exec('ALTER TABLE runs ADD COLUMN workspace_path TEXT');
   }
 
   // ── Migration: add attachments column for existing DBs ──
@@ -110,8 +140,10 @@ function rowToSessionMeta(r) {
     updatedAt: r.updated_at,
     messageCount: r.message_count,
     workspacePath: r.workspace_path || undefined,
-    deepseekUrl: r.deepseek_url || undefined,
-    provider: r.provider || undefined
+    deepseekUrl: r.conversation_url || r.deepseek_url || undefined,
+    provider: r.provider || remoteProvider(r.conversation_url || r.deepseek_url) || 'deepseek',
+    accountKey: r.account_key || undefined,
+    accountIdentity: r.account_identity || undefined
   };
 }
 
@@ -183,10 +215,76 @@ class SessionStore {
     db = openDatabase(DB_FILE);
     ensureSchema();
     migrateLegacyJsonIfNeeded();
+    db.exec(`UPDATE runs SET ended_at = COALESCE(
+      (SELECT MAX(ts) FROM run_activity WHERE run_id = runs.id), started_at
+    ), outcome = 'interrupted', step = 'Engine restarted during the run' WHERE ended_at IS NULL`);
     this.ready = true;
   }
 
   
+  startRun(run) {
+    this.ensure();
+    db.prepare('INSERT INTO runs (id, session_id, provider, started_at, step) VALUES (?, ?, ?, ?, ?)')
+      .run(run.id, run.sessionId, run.provider, Date.now(), 'Preparing run');
+  }
+
+  attachRun(id, sessionId) {
+    db.prepare('UPDATE runs SET session_id = ? WHERE id = ?').run(sessionId, id);
+  }
+
+  setRunWorkspace(id, workspace) {
+    db.prepare('UPDATE runs SET workspace_path = ? WHERE id = ?').run(workspace, id);
+  }
+
+  setRunStep(id, step) {
+    db.prepare('UPDATE runs SET step = ? WHERE id = ? AND step != ? AND ended_at IS NULL')
+      .run(step, id, step);
+  }
+
+  finishRun(id, outcome, message) {
+    db.prepare('UPDATE runs SET ended_at = ?, outcome = ?, step = ? WHERE id = ?')
+      .run(Date.now(), outcome, String(message || '').slice(0, 2000), id);
+  }
+
+  addRunActivity(id, event) {
+    const { output, ...data } = event;
+    const preview = typeof output === 'string' ? output.slice(0, 5100) : null;
+    db.prepare('INSERT INTO run_activity (run_id, ts, data, output) VALUES (?, ?, ?, ?)')
+      .run(id, Date.now(), JSON.stringify(preview ? { ...data, hadOutput: true } : data), preview);
+    if (preview) {
+      db.prepare(`UPDATE run_activity SET output = NULL WHERE run_id = ? AND output IS NOT NULL
+        AND id < (SELECT id FROM run_activity WHERE run_id = ? AND output IS NOT NULL ORDER BY id DESC LIMIT 1 OFFSET 11)`)
+        .run(id, id);
+      db.exec(`UPDATE run_activity SET output = NULL WHERE output IS NOT NULL
+        AND id < (SELECT id FROM run_activity WHERE output IS NOT NULL ORDER BY id DESC LIMIT 1 OFFSET 239)`);
+    }
+  }
+
+  listRuns(sessionId, provider, offset) {
+    this.ensure();
+    const rows = db.prepare(`SELECT id AS runId, provider, started_at AS startedAt,
+      ended_at AS endedAt, workspace_path AS workspace, step, outcome FROM runs WHERE session_id IS ? AND provider = ?
+      ORDER BY started_at DESC, rowid DESC LIMIT 51 OFFSET ?`).all(sessionId, provider, offset);
+    return { runs: rows.slice(0, 50), hasMore: rows.length > 50 };
+  }
+
+  getRunActivity(runId, sessionId, provider, before) {
+    this.ensure();
+    const run = db.prepare(`SELECT id AS runId, provider, started_at AS startedAt,
+      ended_at AS endedAt, workspace_path AS workspace, step, outcome FROM runs WHERE id = ? AND session_id IS ? AND provider = ?`)
+      .get(runId, sessionId, provider);
+    if (!run) return null;
+    const rows = db.prepare(`SELECT id, ts, data, output FROM run_activity
+      WHERE run_id = ? AND id < ? ORDER BY id DESC LIMIT 101`).all(runId, before);
+    return {
+      ...run,
+      hasEarlier: rows.length > 100,
+      events: rows.slice(0, 100).reverse().map(row => ({
+        id: row.id, ts: row.ts, ...JSON.parse(row.data), output: row.output
+      }))
+    };
+  }
+
   getSessions() {
     this.ensure();
     return db.prepare('SELECT * FROM sessions ORDER BY updated_at DESC').all().map(rowToSessionMeta);
@@ -206,8 +304,8 @@ class SessionStore {
     const now = new Date().toISOString();
     const cleanTitle = (title || 'New Mission').slice(0, 50);
     db.prepare(
-      'INSERT INTO sessions (id, title, workspace_path, deepseek_url, provider, created_at, updated_at, message_count) VALUES (?,?,?,?,?,?,?,0)'
-    ).run(id, cleanTitle, extraMeta.workspacePath || '', null, extraMeta.provider || null, now, now);
+      'INSERT INTO sessions (id, title, workspace_path, deepseek_url, provider, account_key, account_identity, created_at, updated_at, message_count) VALUES (?,?,?,?,?,?,?,?,?,0)'
+    ).run(id, cleanTitle, extraMeta.workspacePath || '', null, extraMeta.provider || null, extraMeta.accountKey || null, extraMeta.accountIdentity || null, now, now);
     return {
       id,
       title: cleanTitle,
@@ -311,14 +409,16 @@ class SessionStore {
     this.ensure();
     if (!session || !session.id) return null;
     db.prepare(
-      'UPDATE sessions SET title = ?, updated_at = ?, message_count = ?, deepseek_url = ?, workspace_path = ?, provider = ? WHERE id = ?'
+      'UPDATE sessions SET title = ?, updated_at = ?, message_count = ?, conversation_url = COALESCE(conversation_url, ?), workspace_path = ?, provider = COALESCE(provider, ?), account_key = COALESCE(account_key, ?), account_identity = COALESCE(account_identity, ?) WHERE id = ?'
     ).run(
       session.title || 'New Mission',
       session.updatedAt || new Date().toISOString(),
       typeof session.messageCount === 'number' ? session.messageCount : 0,
-      session.deepseekUrl ?? null,
-      session.workspacePath ?? null,
+      conversationPath(session.provider || remoteProvider(session.deepseekUrl), session.deepseekUrl) ? session.deepseekUrl : null,
+      session.workspacePath ?? '',
       session.provider ?? null,
+      session.accountKey ?? null,
+      session.accountIdentity ?? null,
       session.id
     );
     return session;

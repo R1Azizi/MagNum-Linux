@@ -1,17 +1,21 @@
+import { isAndroid } from '../../utils/platform';
 import React, { useState, useRef, useEffect } from 'react';
 import { Plus, ArrowUp, RefreshCw, Square, Sparkles, Globe, MonitorOff, Brain } from 'lucide-react';
 import { Attachment } from '../../types';
 import { alertDialog } from '../modals/AppDialog';
 import { AttachmentPreview } from '../shared/AttachmentViews';
-import { stageAttachments as stageToProvider, unstageAttachment, trackComposerAttachments } from '../../utils/attachmentStaging';
+import { stageAttachments as stageToProvider, unstageAttachment } from '../../utils/attachmentStaging';
 
 interface ChatInputBarProps {
   isRunning: boolean;
+  sendBlocked: boolean;
+  onSelectProvider: (provider: 'deepseek' | 'gemini' | 'chatgpt') => void;
   isDeepThink?: boolean;
   onToggleDeepThink?: () => void;
   onSend: (text: string, attachments: Attachment[]) => void;
   onStop: () => void;
   onOpenFolder: () => void;
+  providerControl?: React.ReactNode;
   provider?: 'deepseek' | 'gemini' | 'chatgpt';
   geminiThinking?: 'low' | 'medium' | 'high';
   onCycleThinking?: () => void;
@@ -28,11 +32,12 @@ const MAX_MESSAGE_CHARS = 65000;
 const CHAR_COUNTER_AT = Math.floor(MAX_MESSAGE_CHARS * 0.9); // 58500
 
 export const ChatInputBar: React.FC<ChatInputBarProps> = ({
-  isRunning,
+  isRunning, sendBlocked, onSelectProvider,
   isDeepThink,
   onToggleDeepThink,
   onSend,
   onStop,
+  providerControl,
   provider,
   geminiThinking,
   onCycleThinking,
@@ -57,11 +62,10 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
   }, [val]);
 
   useEffect(() => {
-    trackComposerAttachments(attachments);
-    if (attachments.length > 0) {
+    if (!sendBlocked && attachments.length > 0) {
       stageToProvider(provider ?? 'deepseek', attachments);
     }
-  }, [attachments, provider]);
+  }, [attachments, provider, sendBlocked]);
 
   
   const addFiles = (files: FileList | File[]) => {
@@ -115,6 +119,7 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
 
   
   const handlePaste = (e: React.ClipboardEvent) => {
+    if (isAndroid) return;
     const files: File[] = [];
     const items = e.clipboardData?.items;
     if (items) {
@@ -137,15 +142,15 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       
-      if (isRunning) return;
       e.preventDefault();
+      if (isRunning || sendBlocked) return;
       submit();
     }
   };
 
   const submit = () => {
     
-    if (isRunning) return;
+    if (isRunning || sendBlocked) return;
     if (val.trim() || attachments.length > 0) {
       onSend(val.trim(), attachments);
       setVal('');
@@ -153,7 +158,7 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
     }
   };
 
-  const canSend = Boolean(val.trim()) || attachments.length > 0;
+  const canSend = !sendBlocked && (Boolean(val.trim()) || attachments.length > 0);
 
   return (
     <div style={{ padding: '0 24px 10px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, background: 'transparent' }}>
@@ -174,7 +179,7 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
         onDrop={(e) => {
           e.preventDefault();
           setIsDragging(false);
-          if (e.dataTransfer.files?.length) addFiles(e.dataTransfer.files);
+          if (!isAndroid && e.dataTransfer.files?.length) addFiles(e.dataTransfer.files);
         }}
         style={{
           width: '100%',
@@ -203,13 +208,14 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
         )}
         <textarea
           ref={inputRef}
+          aria-label={isAndroid ? "Message DeepSeek" : undefined}
           rows={1}
           value={val}
           maxLength={MAX_MESSAGE_CHARS}
           onChange={(e) => setVal(e.target.value.slice(0, MAX_MESSAGE_CHARS))}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder={isRunning
+          placeholder={isAndroid ? 'Message DeepSeek' : isRunning
             ? 'Agent is working... type your next message now — it sends when the task finishes'
             : 'Send follow-up... (Ctrl+V screenshot or drop files here)'}
           dir="auto"
@@ -231,15 +237,15 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
             overflowWrap: 'anywhere'
           }}
         />
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-          <button
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: isAndroid ? 'flex-end' : 'space-between', gap: 8 }}>
+          {!isAndroid && <button
             onClick={() => fileInputRef.current?.click()}
             title={`Attach files / images (max ${MAX_ATTACHMENTS}, 100MB each)`}
             className="hover-bright"
             style={{ background: 'var(--bg-card)', border: 'none', color: 'var(--text-muted)', borderRadius: '50%', width: 26, height: 26, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', flexShrink: 0 }}
           >
             <Plus size={14} />
-          </button>
+          </button>}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             {val.length >= CHAR_COUNTER_AT && (
               <span className="code-font" style={{ fontSize: 10, flexShrink: 0, color: val.length >= MAX_MESSAGE_CHARS ? 'var(--diff-del-text)' : 'var(--text-dim)' }}>
@@ -248,6 +254,8 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
             )}
             {provider === 'deepseek' && onToggleDeepThink && (
               <button
+                type="button"
+                aria-pressed={isDeepThink}
                 onClick={onToggleDeepThink}
                 title={isDeepThink ? 'DeepThink reasoning is ON' : 'DeepThink reasoning is OFF'}
                 className="hover-bright"
@@ -294,7 +302,7 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
                 <span style={{ fontWeight: 600 }}>Think</span>
               </button>
             )}
-            <div
+            {providerControl ?? (!isAndroid && <div
               style={{ position: 'relative', display: 'flex', alignItems: 'center', flexShrink: 0 }}
               onMouseEnter={() => setModelHover(true)}
               onMouseLeave={() => setModelHover(false)}
@@ -303,6 +311,9 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
               {(modelHover || modelMenuPinned) && (onShowBrowser || onHideBrowser) && (
                 <div style={{ position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)', paddingBottom: 6, zIndex: 60 }}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 3, padding: 4, background: 'var(--bg-popover)', border: '1px solid var(--border-subtle)', borderRadius: 8, boxShadow: '0 8px 22px var(--shadow-heavy)', minWidth: 140 }}>
+                    {(['deepseek', 'gemini', 'chatgpt'] as const).filter(p => p !== provider).map(p =>
+                      <button key={p} disabled={isRunning} onClick={() => onSelectProvider(p)}>{p === 'gemini' ? 'Gemini' : p === 'chatgpt' ? 'ChatGPT' : 'DeepSeek'}</button>
+                    )}
                     {onShowBrowser && (
                       <button
                         onClick={onShowBrowser}
@@ -331,7 +342,7 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
               {}
               <button
                 onClick={() => setModelMenuPinned(p => !p)}
-                title="Model is locked for this conversation"
+                title="Select provider or show browser"
                 style={{
                   display: 'flex',
                   alignItems: 'center',
@@ -348,7 +359,7 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
               >
                 <span style={{ fontWeight: 600 }}>{provider === 'gemini' ? 'Gemini' : provider === 'chatgpt' ? 'ChatGPT' : 'DeepSeek'}</span>
               </button>
-            </div>
+            </div>)}
             {isRunning ? (
               <button
                 onClick={onStop}
@@ -360,6 +371,7 @@ export const ChatInputBar: React.FC<ChatInputBarProps> = ({
             ) : (
               <button
                 onClick={submit}
+                aria-label="Send"
                 disabled={!canSend}
                 style={{
                   background: canSend ? 'var(--accent-green)' : 'var(--bg-card)',

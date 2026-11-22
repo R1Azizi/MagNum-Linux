@@ -37,9 +37,8 @@ libc = "0.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
 
-# Android: only build the desktop (Node-spawning) code on desktop targets.
 [target.'cfg(target_os = "android")'.dependencies]
-# Placeholder for mobile-specific deps (JNI, android plugins) added later.
+tauri-plugin-android-provider = { path = "android-provider" }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

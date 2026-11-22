@@ -1,3 +1,4 @@
+const { checkConversation } = require('./conversation-access');
 'use strict';
 
 
@@ -75,7 +76,7 @@ class GeminiDriver {
   }
   abort() {
     this.isAborted = true;
-    this.clickStopButton().catch(() => {});
+    return this.clickStopButton().catch(() => {});
   }
   async humanClick(target) {
     if (!this.page || this.page.isClosed()) return false;
@@ -309,11 +310,8 @@ class GeminiDriver {
   }
   
   async sendMessage(text, options = {}) {
+    this.assertSendTarget?.();
     if (!this.page || this.page.isClosed()) throw new Error('پنجره مرورگر Gemini بسته است.');
-    if (!this.page.url().includes('aistudio.google.com/prompts')) {
-      await this.page.goto(AI_STUDIO_NEW_CHAT, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await this.page.waitForTimeout(1200);
-    }
     
     await this.ensureModel(AI_STUDIO_MODEL);
     if (options.thinkingLevel) {
@@ -337,6 +335,7 @@ class GeminiDriver {
     console.log(`✅ AI Studio injection OK (method: ${result.via})`);
     await this.page.waitForTimeout(300);
     
+    this.assertSendTarget?.();
     await this.page.keyboard.press('Control+Enter');
     await this.page.waitForTimeout(600);
     
@@ -348,7 +347,10 @@ class GeminiDriver {
     });
     if (!started) {
       const runBtn = this.page.locator('ms-run-button').last();
-      if (await runBtn.isVisible({ timeout: 800 }).catch(() => false)) await this.humanClick(runBtn);
+      if (await runBtn.isVisible({ timeout: 800 }).catch(() => false)) {
+        this.assertSendTarget?.();
+        await this.humanClick(runBtn);
+      }
     }
     await this.page.waitForTimeout(800);
   }
@@ -657,20 +659,8 @@ class GeminiDriver {
       console.warn('parkTab warning:', e.message);
     }
   }
-  async checkChatExists(targetUrl) {
-    if (!this.page || this.page.isClosed()) return true;
-    if (!targetUrl || !targetUrl.includes('aistudio.google.com/prompts')) return false;
-    try {
-      if (this.page.url() !== targetUrl) {
-        await this.page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 15000 });
-        await this.page.waitForTimeout(1500);
-      }
-      const url = this.page.url();
-      if (!url.includes('/prompts/') || url.includes('new_chat')) return false;
-      return await this.page.evaluate(() => !!document.querySelector('textarea, div[contenteditable="true"]'));
-    } catch {
-      return true;
-    }
+  checkConversation(target, diagnose) {
+    return checkConversation(this.page, 'gemini', target, diagnose);
   }
 }
 module.exports = GeminiDriver;

@@ -1,3 +1,4 @@
+import { isAndroid } from '../../utils/platform';
 import React, { useEffect, useRef, useState } from 'react';
 import { Globe, LogOut, ChevronDown, Check, MonitorOff, Lock } from 'lucide-react';
 
@@ -9,10 +10,9 @@ interface ConnectionDockProps {
   providers: ProvidersStatus;
   selectedProvider: ProviderName;
   onSelectProvider: (p: ProviderName) => void;
-  onConnect: (p: ProviderName) => void;
   onShowBrowser: (p: ProviderName) => void;
-  onHideBrowser: (p: ProviderName) => void;
-  onDisconnect: (p: ProviderName) => void;
+  onHideBrowser?: (p: ProviderName) => void;
+  onDisconnect?: (p: ProviderName) => void;
   locked?: boolean;
 }
 
@@ -29,7 +29,7 @@ const STATUS_TEXT: Record<ConnectionStatus, string> = {
 };
 
 export const ConnectionDock: React.FC<ConnectionDockProps> = ({
-  providers, selectedProvider, onSelectProvider, onConnect,
+  providers, selectedProvider, onSelectProvider,
   onShowBrowser, onHideBrowser, onDisconnect, locked = false
 }) => {
   const [open, setOpen] = useState(false);
@@ -58,19 +58,21 @@ export const ConnectionDock: React.FC<ConnectionDockProps> = ({
   const pick = (p: ProviderName) => {
     if (locked) return;
     onSelectProvider(p);
-    if (providers[p] === 'disconnected') onConnect(p);
+
     setOpen(false);
   };
 
   const row = (p: ProviderName) => {
     const s = providers[p];
     const active = p === sel;
+    const browserOnly = isAndroid && p !== 'deepseek';
     return (
-      <div key={p} onClick={() => pick(p)} style={{
+      <div key={p} aria-disabled={browserOnly || undefined}
+        onClick={isAndroid ? undefined : () => pick(p)} style={{
         display: 'flex', alignItems: 'center', gap: 8, padding: '7px 9px', borderRadius: 8,
         background: active ? 'var(--accent-green-dim)' : 'var(--bg-card)',
         border: `1px solid ${active ? 'var(--border-active)' : 'var(--border-subtle)'}`,
-        cursor: locked && !active ? 'default' : 'pointer',
+        cursor: isAndroid || (locked && !active) ? 'default' : 'pointer',
         opacity: locked && !active ? 0.45 : 1
       }}>
         {dot(s, META[p].color)}
@@ -78,11 +80,16 @@ export const ConnectionDock: React.FC<ConnectionDockProps> = ({
           {META[p].label}
         </span>
         <span style={{ fontSize: 10.5, color: s === 'connected' ? META[p].color : 'var(--text-dim)', flexShrink: 0 }}>
-          {STATUS_TEXT[s]}
+          {browserOnly ? 'Browser panel only' : STATUS_TEXT[s]}
         </span>
         {active && <Check size={12} color="var(--accent-green)" style={{ flexShrink: 0 }} />}
 
-        {s !== 'disconnected' && (
+        {isAndroid && active && <button
+          type="button"
+          disabled={locked}
+          onClick={() => { setOpen(false); onShowBrowser(p); }}
+        >{s === 'disconnected' ? 'Open DeepSeek' : 'Show Browser'}</button>}
+        {!isAndroid && s !== 'disconnected' && (
           <span style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0 }} onClick={(e) => e.stopPropagation()}>
             <span style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
               <button onClick={() => onShowBrowser(p)} title="Show Browser" className="hover-bright"
@@ -93,7 +100,7 @@ export const ConnectionDock: React.FC<ConnectionDockProps> = ({
                 }}>
                 <Globe size={10} /> Show Browser
               </button>
-              <button onClick={() => onHideBrowser(p)} title="Hide Browser" className="hover-bright"
+              <button onClick={() => onHideBrowser?.(p)} title="Hide Browser" className="hover-bright"
                 style={{
                   background: 'transparent', border: 'none', color: 'var(--text-dim)',
                   cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3,
@@ -102,7 +109,7 @@ export const ConnectionDock: React.FC<ConnectionDockProps> = ({
                 <MonitorOff size={10} /> Hide Browser
               </button>
             </span>
-            <button onClick={() => onDisconnect(p)} title="Disconnect (profile kept)" className="hover-bright"
+            <button onClick={() => onDisconnect?.(p)} title="Disconnect (profile kept)" className="hover-bright"
               style={{ background: 'transparent', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', display: 'flex', padding: 3, borderRadius: 6 }}>
               <LogOut size={12} />
             </button>
@@ -114,7 +121,7 @@ export const ConnectionDock: React.FC<ConnectionDockProps> = ({
 
   return (
     <div ref={boxRef} style={{ position: 'relative' }}>
-      <button onClick={() => setOpen(v => !v)} title="AI model & connection" className="hover-bright"
+      <button onClick={() => setOpen(v => !v)} title="AI model & connection" aria-expanded={open} className="hover-bright"
         style={{
           display: 'flex', alignItems: 'center', gap: 6,
           background: 'var(--bg-card)', border: '1px solid var(--border-subtle)',
@@ -128,7 +135,7 @@ export const ConnectionDock: React.FC<ConnectionDockProps> = ({
       </button>
 
       {open && (
-        <div style={{
+        <div className="provider-menu" style={{
           position: 'absolute', bottom: '100%', left: 0, marginBottom: 8,
           width: 310, background: 'var(--bg-popover)',
           border: '1px solid var(--border-subtle)', borderRadius: 12,
@@ -136,7 +143,7 @@ export const ConnectionDock: React.FC<ConnectionDockProps> = ({
           display: 'flex', flexDirection: 'column', gap: 6
         }}>
           <span style={{ fontSize: 10, color: 'var(--text-dim)', fontWeight: 700, letterSpacing: 0.4, padding: '0 4px' }}>
-            AI PROVIDERS {locked ? '(locked to this chat)' : '(one active at a time)'}
+            {isAndroid ? 'AI PROVIDERS' : `AI PROVIDERS ${locked ? '(locked to this chat)' : '(one active at a time)'}`}
           </span>
           {row('deepseek')}
           {row('gemini')}

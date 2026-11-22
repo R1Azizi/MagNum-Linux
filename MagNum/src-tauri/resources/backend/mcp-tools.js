@@ -33,7 +33,7 @@ function createTools(workspace) {
   return tools;
 }
 
-async function callTool(tools, name, args = {}) {
+async function callTool(tools, name, args = {}, signal) {
   switch (name) {
     case 'read_files': {
       const files = Array.isArray(args.files) ? args.files.slice(0, 5) : [];
@@ -63,7 +63,7 @@ async function callTool(tools, name, args = {}) {
       return { content: [{ type: 'text', text: JSON.stringify(res) }] };
     }
     case 'execute_command': {
-      const res = await tools.executeCommand(String(args.command || ''));
+      const res = await tools.executeCommand(String(args.command || ''), signal);
       return { content: [{ type: 'text', text: res.output }] };
     }
     case 'list_dir': {

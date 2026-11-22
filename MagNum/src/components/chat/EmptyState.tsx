@@ -1,3 +1,4 @@
+import { isAndroid } from '../../utils/platform';
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Plus,
@@ -19,10 +20,11 @@ import { Tooltip } from '../shared/Tooltip';
 import { RepoPickerMenu, isScratchPath, scratchLabel } from '../shared/RepoPicker';
 import { ConnectionDock, ProvidersStatus, ProviderName } from '../layout/ConnectionDock';
 import { AttachmentPreview } from '../shared/AttachmentViews';
-import { stageAttachments as stageToProvider, unstageAttachment, trackComposerAttachments } from '../../utils/attachmentStaging';
+import { stageAttachments as stageToProvider, unstageAttachment } from '../../utils/attachmentStaging';
 
 interface EmptyStateProps {
   repoName: string;
+  sendBlocked: boolean;
   activeWorkspace: string;
   recentWorkspaces: string[];
   onOpenWorkspace: (p: string) => void;
@@ -51,7 +53,6 @@ interface EmptyStateProps {
   chatgptThink?: boolean;
   onToggleChatgptThink?: () => void;
   providers: ProvidersStatus;
-  onConnectProvider: (p: ProviderName) => void;
   onShowProvider: (p: ProviderName) => void;
   onHideProvider: (p: ProviderName) => void;
   onDisconnectProvider: (p: ProviderName) => void;
@@ -60,7 +61,7 @@ interface EmptyStateProps {
 
 
 export const EmptyState: React.FC<EmptyStateProps> = ({
-  repoName,
+  repoName, sendBlocked,
   activeWorkspace,
   recentWorkspaces,
   onOpenWorkspace,
@@ -81,7 +82,6 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   chatgptThink = true,
   onToggleChatgptThink,
   providers,
-  onConnectProvider,
   onShowProvider,
   onHideProvider,
   onDisconnectProvider,
@@ -118,11 +118,10 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   }, [inputVal]);
 
   useEffect(() => {
-    trackComposerAttachments(attachments);
-    if (attachments.length > 0) {
+    if (!sendBlocked && attachments.length > 0) {
       stageToProvider(selectedProvider, attachments);
     }
-  }, [attachments, selectedProvider]);
+  }, [attachments, selectedProvider, sendBlocked]);
 
   const skillsList = SKILLS;
   const isScratch = isScratchPath(activeWorkspace);
@@ -139,7 +138,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === '/' && inputVal.trim() === '') {
+    if (!isAndroid && e.key === '/' && inputVal.trim() === '') {
       setIsMenuOpen(true);
     }
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -152,6 +151,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   };
 
   const handleSend = () => {
+    if (sendBlocked) return;
     const base = inputVal.trim();
     if (base || attachments.length > 0) {
       onSubmit(base, attachments, activeSkill ? activeSkill.id : null);
@@ -225,6 +225,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   };
 
   const handlePaste = (e: React.ClipboardEvent) => {
+    if (isAndroid) return;
     const files: File[] = [];
     const items = e.clipboardData?.items;
     if (items) {
@@ -287,7 +288,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
         accept="image/*,.pdf,.doc,.docx,.xlsx,.xls,.ppt,.pptx,.txt,.json,.js,.ts,.tsx,.jsx,.html,.css,.rs,.py"
         style={{ display: 'none' }}
       />
-      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
+      {!isAndroid && <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
         <div style={{ position: 'relative', display: 'inline-flex' }}>
           <button
             onClick={() => setRepoMenu(v => !v)}
@@ -309,7 +310,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
             onBrowseInApp={onBrowseInApp}
           />
         </div>
-      </div>
+      </div>}
 
       <div
         onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
@@ -317,7 +318,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
         onDrop={(e) => {
           e.preventDefault();
           setIsDragging(false);
-          if (e.dataTransfer.files?.length) addFiles(e.dataTransfer.files);
+          if (!isAndroid && e.dataTransfer.files?.length) addFiles(e.dataTransfer.files);
         }}
         style={{ width: '100%', maxWidth: '640px', background: 'var(--bg-surface)', border: isDragging ? '1px dashed var(--accent-green)' : '1px solid var(--border-subtle)', borderRadius: '14px', padding: '12px 14px', boxShadow: '0 10px 40px var(--shadow-heavy)', display: 'flex', flexDirection: 'column', gap: '8px', position: 'relative' }}>
         {attachments.length > 0 && (
@@ -328,17 +329,18 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
 
           <textarea
             ref={textareaRef}
+            aria-label={isAndroid ? "Message DeepSeek" : undefined}
             value={inputVal}
             maxLength={MAX_MESSAGE_CHARS}
             onChange={(e) => setInputVal(e.target.value.slice(0, MAX_MESSAGE_CHARS))}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
-            placeholder="Plan, Build, / for skills, @ for context — paste screenshot or drop files here"
+            placeholder={isAndroid ? "Message DeepSeek" : "Plan, Build, / for skills, @ for context — paste screenshot or drop files here"}
             style={{ background: 'transparent', border: 'none', outline: 'none', color: 'var(--text-main)', fontSize: '13.5px', fontFamily: 'inherit', resize: 'none', minHeight: '56px', maxHeight: '240px', overflowY: 'auto', width: '100%', lineHeight: '1.5', wordBreak: 'break-word', overflowWrap: 'anywhere' }}
           />
 
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', paddingTop: '4px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', position: 'relative' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: isAndroid ? 'flex-end' : 'space-between', flexWrap: 'wrap', gap: '8px', paddingTop: '4px' }}>
+          {!isAndroid && <div style={{ display: 'flex', alignItems: 'center', gap: '6px', position: 'relative' }}>
             <button
               onClick={() => setIsMenuOpen(!isMenuOpen)}
               title="Add skills, context, or attach files"
@@ -396,23 +398,25 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
                 </div>
               </div>
             )}
-          </div>
+          </div>}
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div className="empty-composer-actions" style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             {inputVal.length >= CHAR_COUNTER_AT && (
               <span className="code-font" style={{ fontSize: 10, flexShrink: 0, color: inputVal.length >= MAX_MESSAGE_CHARS ? 'var(--diff-del-text)' : 'var(--text-dim)' }}>
                 {inputVal.length}/{MAX_MESSAGE_CHARS}
               </span>
             )}
             {selectedProvider === 'deepseek' ? (
-              <div
+              <button
+                type="button"
+                aria-pressed={isDeepThink}
                 onClick={onToggleDeepThink}
                 title={isDeepThink ? 'DeepThink reasoning is ON' : 'DeepThink reasoning is OFF'}
                 style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', color: isDeepThink ? 'var(--accent-green)' : 'var(--text-muted)', cursor: 'pointer', padding: '3px 8px', borderRadius: '6px', background: isDeepThink ? 'var(--accent-green-dim)' : 'var(--bg-card)', border: `1px solid ${isDeepThink ? 'var(--border-active)' : 'var(--border-subtle)'}` }}
               >
                 <Sparkles size={11} />
                 <span style={{ fontWeight: 600 }}>DeepThink</span>
-              </div>
+              </button>
             ) : selectedProvider === 'gemini' ? (
               <button
                 onClick={onCycleThinking}
@@ -448,7 +452,6 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
               providers={providers}
               selectedProvider={selectedProvider}
               onSelectProvider={onSelectProvider}
-              onConnect={onConnectProvider}
               onShowBrowser={onShowProvider}
               onHideBrowser={onHideProvider}
               onDisconnect={onDisconnectProvider}
@@ -456,7 +459,8 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
             />
             <button
               onClick={handleSend}
-              disabled={!inputVal.trim() && attachments.length === 0}
+              aria-label="Send"
+              disabled={sendBlocked || !inputVal.trim() && attachments.length === 0}
               style={{ background: (inputVal.trim() || attachments.length > 0) ? 'var(--accent-green)' : 'var(--bg-card)', color: (inputVal.trim() || attachments.length > 0) ? 'var(--on-accent)' : 'var(--text-dim)', border: 'none', borderRadius: '50%', width: '26px', height: '26px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: (inputVal.trim() || attachments.length > 0) ? 'pointer' : 'default', transition: 'all 0.15s' }}
             >
               <ArrowUp size={14} />
@@ -465,6 +469,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
         </div>
       </div>
 
+      {!isAndroid && <>
       <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap', justifyContent: 'center' }}>
         <button className="prompt-chip" onClick={() => selectSkill(skillsList.find(s => s.id === 'plan')!)}>
           Plan New Idea <span style={{ opacity: 0.5, fontSize: '10px' }}>⇥ Tab</span>
@@ -499,6 +504,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
         </code>{' '}
         to research your codebase before starting code changes
       </div>
+      </>}
       </div>
       </div>
     </div>

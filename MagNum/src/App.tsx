@@ -3,8 +3,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { RightPanelTab } from './types';
 import { Language } from './i18n/translations';
 import { useMagNumSocket } from './hooks/useMagNumSocket';
+import { AndroidWorkspace } from './components/layout/AndroidWorkspace';
 import { TopMenuBar } from './components/layout/TopMenuBar';
 import { confirmDialog, AppDialogHost } from './components/modals/AppDialog';
+import { ConnectionDock } from './components/layout/ConnectionDock';
 import { LeftSidebar } from './components/layout/LeftSidebar';
 import { EmptyState } from './components/chat/EmptyState';
 import { MessageList } from './components/chat/MessageList';
@@ -16,6 +18,7 @@ import { SettingsView } from './components/settings/SettingsView';
 import { UpdateGate } from './components/update/UpdateGate';
 import { ImageViewerHost } from './components/shared/ImageViewer';
 import { FolderPickerModal } from './components/shared/FolderPickerModal';
+import { isAndroid } from './utils/platform';
 
 import './App.css';
 
@@ -24,13 +27,40 @@ export default function App() {
 
 
 
+  const [narrowLayout, setNarrowLayout] = useState(() => window.matchMedia('(max-width: 760px)').matches);
+  const compactLayout = isAndroid || narrowLayout;
+  const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(true);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const isSidebarOpen = compactLayout ? mobileSidebarOpen : desktopSidebarOpen;
+
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 760px)');
+    const onChange = () => setNarrowLayout(query.matches);
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, []);
+
   const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>(null);
   const [openTabs, setOpenTabs] = useState<PanelKey[]>([]);
   const openTabsRef = useRef<PanelKey[]>([]);
   useEffect(() => { openTabsRef.current = openTabs; }, [openTabs]);
 
-  
+  const closeDrawer = useCallback(() => {
+    setMobileSidebarOpen(false);
+    setRightPanelTab(null);
+  }, []);
+
+  const toggleSidebar = useCallback(() => {
+    if (compactLayout) {
+      setRightPanelTab(null);
+      setMobileSidebarOpen(open => !open);
+    } else {
+      setDesktopSidebarOpen(open => !open);
+    }
+  }, [compactLayout]);
+
   const openRightTab = useCallback((tb: PanelKey) => {
+    setMobileSidebarOpen(false);
     setOpenTabs(prev => (prev.includes(tb) ? prev : [...prev, tb]));
     setRightPanelTab(tb);
   }, []);
@@ -48,13 +78,14 @@ export default function App() {
     if (rightPanelTab !== null) {
       setRightPanelTab(null);
     } else {
-      const target = openTabsRef.current[openTabsRef.current.length - 1] || 'browser';
+      const target = openTabsRef.current[openTabsRef.current.length - 1] || 'activity';
       openRightTab(target);
     }
   }, [rightPanelTab, openRightTab]);
 
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [workspaceControlsOpen, setWorkspaceControlsOpen] = useState(false);
   const [autoApplyPatch, setAutoApplyPatch] = useState<boolean>(() => {
     const saved = localStorage.getItem('magnum_autopatch');
     return saved === null ? true : saved === '1';
@@ -69,7 +100,6 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('magnum_cmdapproval', requireCommandApproval ? '1' : '0');
   }, [requireCommandApproval]);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
   const [language, setLanguage] = useState<Language>(() => {
     return (localStorage.getItem('magnum_lang') as Language) || 'en';
@@ -90,17 +120,19 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
 
   const {
     activeWorkspace,
+    inspectorCapabilities, engineConnected, inspectionRevision, requestInspector, localActivity,
     fileTree,
     selectedFileName,
     selectedFileContent,
     messages,
     streamingState,
     isRunning,
+    runId,
+    commandId,
     agentStatus,
     isDeepThink,
-    setIsDeepThink,
     selectedProvider,
-    setSelectedProvider,
+    setSelectedProvider, newChat, reconnect, composerSequence, accessStatus, accessDetail, accessMessage, sendBlocked,
     defaultProvider,
     setDefaultProvider,
     setDeepThink,
@@ -114,6 +146,7 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     diagnosticResult,
     providersStatus,
     recentWorkspaces,
+    androidTools, androidWorkspaceStatus, androidRunWorkspace,
     sendAction,
     sendPrompt,
     loadSession,
@@ -147,6 +180,11 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
   }, [geminiThinking, setGeminiThinking]);
 
   const handleOpenFolder = useCallback(async () => {
+    if (isAndroid) {
+      setIsSettingsOpen(false);
+      setWorkspaceControlsOpen(open => !open);
+      return;
+    }
     try {
       const picked = await invoke<string | null>('pick_folder');
       if (picked) { openWorkspace(picked); return; }
@@ -183,9 +221,11 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'b' || e.key === 'B')) {
+      if (e.defaultPrevented) return;
+      if (compactLayout && e.key === 'Escape') closeDrawer();
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'b' || e.key === 'B')) {
         e.preventDefault();
-        setIsSidebarOpen(prev => !prev);
+        toggleSidebar();
       }
       
       if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'g' || e.key === 'G')) { e.preventDefault(); openRightTab('files'); }
@@ -204,19 +244,21 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [rightPanelTab, messages.length, streamingState, toggleRightPanel, openRightTab]);
+  }, [compactLayout, closeDrawer, toggleSidebar, toggleRightPanel, openRightTab]);
 
 
+
+  const drawerOpen = compactLayout && (isSidebarOpen || rightPanelTab !== null);
 
   return (
     <UpdateGate>
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+    <div className={`app-shell${compactLayout ? ' app-shell--compact' : ''}`}>
       
 <TopMenuBar
   activeWorkspace={activeWorkspace}
   isSidebarOpen={isSidebarOpen}
-  onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
-  onNewChat={() => sendAction('new_chat')}
+  onToggleSidebar={toggleSidebar}
+  onNewChat={newChat}
   onOpenFolder={handleOpenFolder}
   onToggleTab={(t) => { if (rightPanelTab === t) setRightPanelTab(null); else openRightTab(t); }}
   onOpenFilters={() => setIsSettingsOpen(true)}
@@ -246,31 +288,79 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
            diagnosticResult={diagnosticResult}
          />
       ) : (
-        <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0 }}>
-          
+        <div style={{ display: 'flex', flex: 1, overflow: 'hidden', minHeight: 0, position: 'relative' }}>
+          {drawerOpen && <button className="drawer-backdrop" aria-label="Close drawer" onClick={closeDrawer} />}
           {isSidebarOpen && (
             <LeftSidebar
               activeWorkspace={activeWorkspace}
+              selectedProvider={selectedProvider}
               sessions={sessions}
               currentSessionId={currentSessionId}
 
               recentWorkspaces={recentWorkspaces}
-              onNewChat={() => sendAction('new_chat')}
+              onNewChat={() => {
+                newChat();
+                if (compactLayout) closeDrawer();
+              }}
               onOpenFolder={handleOpenFolder}
               onBrowseInApp={handleBrowseInApp}
               onOpenWorkspace={(p) => openWorkspace(p)}
               onStartScratch={() => sendAction('start_scratch')}
               onOpenFilters={() => setIsSettingsOpen(true)}
-              onLoadSession={(id) => loadSession(id)}
+              onLoadSession={(id) => {
+                loadSession(id);
+                if (compactLayout) closeDrawer();
+              }}
               onDeleteSession={(id) => sendAction('delete_session', { sessionId: id })}
               onDiagnose={() => setIsSettingsOpen(true)}
-              onToggleSidebar={() => setIsSidebarOpen(false)}
+              onToggleSidebar={toggleSidebar}
             />
           )}
 
-          <main style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-secondary)', overflow: 'hidden', position: 'relative' }}>
-            {messages.length === 0 && !streamingState ? (
+          <main inert={drawerOpen || undefined} style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: 'var(--bg-secondary)', overflow: 'hidden', position: 'relative' }}>
+            {!compactLayout && !isSidebarOpen && <button onClick={newChat} disabled={isRunning}>New Chat</button>}
+            {isAndroid && (
+              <section className="mobile-provider-status" aria-label="Provider connection">
+                <p role="status">{accessDetail || ({
+                  ready: 'DeepSeek connected',
+                  checking: 'Checking DeepSeek connection…',
+                  sign_in: 'Sign in with your DeepSeek email to chat.',
+                  missing: 'DeepSeek could not open this conversation. Your local history is available below.'
+                } as Record<string, string>)[accessStatus]}</p>
+                {accessStatus === 'missing' && <button className="prompt-chip" onClick={newChat}>New chat</button>}
+                {accessStatus === 'temporary' && <button className="prompt-chip" onClick={reconnect}>Retry</button>}
+                <button className="prompt-chip" disabled={isRunning} onClick={() => sendAction('show_provider_browser')}>
+                  {accessStatus === 'sign_in' ? 'Sign in to DeepSeek' : 'Open DeepSeek'}
+                </button>
+              </section>
+            )}
+            {isAndroid && <AndroidWorkspace
+              path={activeWorkspace}
+              runPath={androidRunWorkspace}
+              paths={recentWorkspaces}
+              tools={androidTools}
+              status={androidWorkspaceStatus}
+              expanded={workspaceControlsOpen}
+              onToggle={() => setWorkspaceControlsOpen(open => !open)}
+              onSelect={openWorkspace}
+              onCreate={name => sendAction('create_workspace', { name })}
+              onImport={() => sendAction('import_workspace')}
+              onViewFiles={() => openRightTab('files')}
+              onBrowseFiles={() => sendAction('browse_workspaces')}
+              onTerminal={() => openRightTab('terminal')}
+            />}
+            {!isAndroid && sendBlocked && <section role="status" style={{ padding: '10px 16px', background: 'var(--bg-card)' }}>
+              <span>{accessMessage}</span>
+              {accessStatus !== 'checking' && <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                <button onClick={newChat}>Start a New Chat</button>
+                <button onClick={() => sendAction('switch_provider_account', { provider: selectedProvider })}>{accessStatus === 'sign_in' ? 'Sign In' : 'Switch Account'}</button>
+                <button onClick={reconnect}>{accessStatus === 'disconnected' ? 'Reconnect' : 'Check Again'}</button>
+              </div>}
+            </section>}
+            {!currentSessionId && messages.length === 0 && !isRunning && !streamingState ? (
               <EmptyState
+                key={selectedProvider + composerSequence}
+                sendBlocked={sendBlocked}
                 repoName={repoName}
                 activeWorkspace={activeWorkspace}
                 recentWorkspaces={recentWorkspaces}
@@ -278,10 +368,7 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
                 onStartScratch={() => sendAction('start_scratch')}
                 isDeepThink={isDeepThink}
                 autoApplyPatch={autoApplyPatch}
-                onToggleDeepThink={() => {
-                  setIsDeepThink(!isDeepThink);
-                  sendAction('set_deep_think', { enabled: !isDeepThink });
-                }}
+                onToggleDeepThink={() => setDeepThink(!isDeepThink)}
                 onToggleAutoPatch={() => setAutoApplyPatch(!autoApplyPatch)}
                 onOpenFolder={handleOpenFolder}
                 onBrowseInApp={handleBrowseInApp}
@@ -290,7 +377,7 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
                 activeRightTab={rightPanelTab}
                 onTogglePanel={toggleRightPanel}
                 isSidebarOpen={isSidebarOpen}
-                onToggleSidebar={() => setIsSidebarOpen(prev => !prev)}
+                onToggleSidebar={toggleSidebar}
                 selectedProvider={selectedProvider}
                 onSelectProvider={setSelectedProvider}
                 geminiThinking={geminiThinking}
@@ -298,7 +385,6 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
                 chatgptThink={chatgptThink}
                 onToggleChatgptThink={() => setChatgptThink(!chatgptThink)}
                 providers={providersStatus}
-                onConnectProvider={(p) => sendAction(p === 'gemini' ? 'connect_gemini' : p === 'chatgpt' ? 'connect_chatgpt' : 'open_browser')}
                 onShowProvider={(p) => sendAction('show_provider_browser', { provider: p })}
                 onHideProvider={(p) => sendAction('hide_provider_browser', { provider: p })}
                 onDisconnectProvider={async (p) => {
@@ -315,7 +401,7 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
                   });
                   if (ok) sendAction(p === 'gemini' ? 'logout_gemini' : p === 'chatgpt' ? 'logout_chatgpt' : 'logout');
                 }}
-                providerLocked={Boolean(currentSessionId)}
+                providerLocked={isRunning}
               />
             ) : (
               <MessageList
@@ -325,7 +411,7 @@ const [theme, setTheme] = useState<'dark' | 'light'>(() => {
                   streamingState={streamingState}
                   agentStatus={agentStatus}
                   isSidebarOpen={isSidebarOpen}
-                  onToggleSidebar={() => setIsSidebarOpen(prev => !prev)}
+                  onToggleSidebar={toggleSidebar}
                   onOpenRightTab={(tab) => { if (tab) openRightTab(tab); else setRightPanelTab(null); }}
                   activeRightTab={rightPanelTab}
                   openTabs={openTabs}
@@ -344,19 +430,26 @@ isRunning={isRunning}
                     sessionId={currentSessionId}
                     inputBar={
                       <ChatInputBar
+                        key={currentSessionId || selectedProvider}
+                        sendBlocked={sendBlocked}
+                        onSelectProvider={setSelectedProvider}
                         isRunning={isRunning}
                         isDeepThink={isDeepThink}
                         provider={selectedProvider}
+                        providerControl={isAndroid ? <ConnectionDock
+                          providers={providersStatus}
+                          selectedProvider={selectedProvider}
+                          onSelectProvider={setSelectedProvider}
+                          onShowBrowser={p => sendAction('show_provider_browser', { provider: p })}
+                          locked={isRunning}
+                        /> : undefined}
                         geminiThinking={geminiThinking}
                         onCycleThinking={cycleGeminiThinking}
                         chatgptThink={chatgptThink}
                         onToggleChatgptThink={() => setChatgptThink(!chatgptThink)}
-                        onToggleDeepThink={() => {
-                          setIsDeepThink(!isDeepThink);
-                          sendAction('set_deep_think', { enabled: !isDeepThink });
-                        }}
+                        onToggleDeepThink={() => setDeepThink(!isDeepThink)}
                         onSend={(text, attachments) => sendPrompt(text, autoApplyPatch, [], ignoredPatterns, attachments, null, !requireCommandApproval)}
-                        onStop={() => sendAction('stop_task')}
+                        onStop={() => sendAction('stop_task', { runId })}
                         onOpenFolder={handleOpenFolder}
                         onShowBrowser={() => sendAction('show_provider_browser', { provider: selectedProvider })}
                         onHideBrowser={() => sendAction('hide_provider_browser', { provider: selectedProvider })}
@@ -368,6 +461,11 @@ isRunning={isRunning}
 
           <InspectorDrawer
             tab={rightPanelTab}
+            inspection={{
+              sessionId: currentSessionId, provider: selectedProvider, activeRunId: runId, workspace: activeWorkspace,
+              revision: inspectionRevision, connected: engineConnected, capabilities: inspectorCapabilities,
+              request: requestInspector, localActivity
+            }}
             openTabs={openTabs}
             onSelectTab={(k) => setRightPanelTab(k)}
             onCloseTab={closeRightTab}
@@ -378,7 +476,10 @@ isRunning={isRunning}
             onRequestEditsIds={requestEditsIds}
             messages={messages}
             revertedIds={revertedEditIds}
-            onRevertEdits={(ids) => sendAction('revert_edits', { editIds: ids })}
+            onRevertEdits={isAndroid ? undefined : ids => sendAction('revert_edits', { editIds: ids })}
+            androidRunWorkspace={androidRunWorkspace}
+            androidCommandHelp={androidTools?.find(tool => tool.action === 'execute_command')?.description}
+            onStopRun={() => sendAction('stop_task', { runId })}
             terminalLogs={terminalLogs}
             patchHistory={patchHistory}
             fileTree={fileTree}
@@ -397,6 +498,7 @@ isRunning={isRunning}
             termLines={termLines}
             termCwd={termCwd}
             onTerminalInput={sendTerminalInput}
+            terminalRunning={Boolean(commandId)}
             onTerminalInterrupt={sendTerminalInterrupt}
             onTerminalRestart={sendTerminalRestart}
           />

@@ -52,7 +52,7 @@ export interface PatchProposal {
   replace?: string;
 }
 
-export type RightPanelTab = 'changes' | 'browser' | 'terminal' | 'files' | null;
+export type RightPanelTab = 'activity' | 'review' | 'changes' | 'browser' | 'terminal' | 'files' | null;
 
 export interface BrowserViewState {
   url: string;
@@ -62,3 +62,40 @@ export interface BrowserViewState {
   screenshot: string | null;
   textPreview?: string;
 }
+
+export interface RunSummary {
+  runId: string;
+  provider: ModelProvider;
+  startedAt: number;
+  workspace?: string | null;
+  endedAt: number | null;
+  step: string;
+  outcome: 'completed' | 'stopped' | 'failed' | 'interrupted' | null;
+}
+
+export interface RunActivityEvent {
+  id: number;
+  ts: number;
+  type: 'tool_started' | 'tool_result' | 'file_edit' | 'approval' | 'error' | 'stop_requested';
+  action?: string;
+  target?: string;
+  message?: string;
+  status?: string;
+  exitCode?: number | null;
+  signal?: string | null;
+  output?: string | null;
+  hadOutput?: boolean;
+  editId?: number;
+}
+
+export interface RunActivity extends RunSummary {
+  events: RunActivityEvent[];
+  hasEarlier: boolean;
+  edits?: EditSummary[];
+}
+
+export type GitLayer = 'staged' | 'unstaged' | 'untracked';
+export interface GitChange { file: string; original?: string; state: string; }
+export type GitResult =
+  | { status: 'ready'; files?: GitChange[]; root?: string; diff?: DiffLineData[]; truncated?: boolean }
+  | { status: 'no-workspace' | 'non-git' | 'unavailable' | 'error'; message?: string };

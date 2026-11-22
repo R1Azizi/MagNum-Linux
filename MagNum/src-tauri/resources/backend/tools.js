@@ -3,8 +3,8 @@
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const path = require('node:path');
-const { exec, spawn } = require('node:child_process');
-const { commandShell } = require('./platform');
+const { spawn } = require('node:child_process');
+const { spawnOwnedShell } = require('./platform');
 
 let FS_BIN_CACHE = null;
 function resolveFsBin() {
@@ -279,7 +279,7 @@ class ProjectTools {
   }
 
   
-  async patchFileJs(filePath, searchCode, replaceCode) {
+  async patchFileJs(filePath, searchCode, replaceCode, captureEdits = false) {
     try {
       const fullPath = path.resolve(this.workspaceDir, filePath);
       let content = await fs.readFile(fullPath, 'utf-8');
@@ -290,13 +290,22 @@ class ProjectTools {
       let cleanReplace = replaceCode.replace(/\r\n/g, '\n').replace(/^\n+|\n+$/g, '');
 
       
+      const writePatch = async (updated, search, replace, message = `Successfully updated ${filePath}`) => {
+        await fs.writeFile(fullPath, isCRLF ? updated.replace(/\n/g, '\r\n') : updated, 'utf-8');
+        return { success: true, message, edit: captureEdits && search !== replace ? { search, replace } : undefined };
+      };
+
+      const replaceBlock = (search, replace) => {
+        const updated = normalizedContent.replace(search, replace);
+        const offset = normalizedContent.indexOf(search);
+        return writePatch(updated, search, updated.slice(offset, updated.length - (normalizedContent.length - offset - search.length)));
+      };
+
       const normalizeSpaces = (s) => s.replace(/\u00A0/g, ' ').replace(/[ \t]+/g, ' ').trim();
 
       
       if (normalizedContent.includes(cleanSearch)) {
-        const updated = normalizedContent.replace(cleanSearch, cleanReplace);
-        await fs.writeFile(fullPath, isCRLF ? updated.replace(/\n/g, '\r\n') : updated, 'utf-8');
-        return { success: true, message: `Successfully updated ${filePath}` };
+        return await replaceBlock(cleanSearch, cleanReplace);
       }
 
       
@@ -304,9 +313,7 @@ class ProjectTools {
       const noNumSearch = stripNumbers(cleanSearch);
       const noNumReplace = stripNumbers(cleanReplace);
       if (normalizedContent.includes(noNumSearch)) {
-        const updated = normalizedContent.replace(noNumSearch, noNumReplace);
-        await fs.writeFile(fullPath, isCRLF ? updated.replace(/\n/g, '\r\n') : updated, 'utf-8');
-        return { success: true, message: `Successfully updated ${filePath}` };
+        return await replaceBlock(noNumSearch, noNumReplace);
       }
 
       
@@ -345,10 +352,8 @@ class ProjectTools {
           return fileBaseIndent + line.replace(/^\s*/, '');
         });
 
-        contentLines.splice(matchIndex, searchLines.length, ...adjustedReplaceLines);
-        const updated = contentLines.join('\n');
-        await fs.writeFile(fullPath, isCRLF ? updated.replace(/\n/g, '\r\n') : updated, 'utf-8');
-        return { success: true, message: `Successfully updated ${filePath}` };
+        const matched = contentLines.splice(matchIndex, searchLines.length, ...adjustedReplaceLines);
+        return await writePatch(contentLines.join('\n'), matched.join('\n'), adjustedReplaceLines.join('\n'));
       }
 
       
@@ -357,10 +362,10 @@ class ProjectTools {
         const foundIdx = contentLines.findIndex(l => normalizeSpaces(l).startsWith(varPrefix + ' =') || normalizeSpaces(l).startsWith(varPrefix + '='));
         if (foundIdx !== -1) {
           const fileBaseIndent = contentLines[foundIdx].match(/^\s*/)[0];
+          const matched = contentLines[foundIdx];
           contentLines[foundIdx] = fileBaseIndent + cleanReplace.trim();
-          const updated = contentLines.join('\n');
-          await fs.writeFile(fullPath, isCRLF ? updated.replace(/\n/g, '\r\n') : updated, 'utf-8');
-          return { success: true, message: `Successfully updated ${filePath} (matched by variable anchor)` };
+          return await writePatch(contentLines.join('\n'), matched, contentLines[foundIdx],
+            `Successfully updated ${filePath} (matched by variable anchor)`);
         }
       }
 
@@ -374,7 +379,7 @@ class ProjectTools {
   }
 
 
-  async patchBatchJs(patches = []) {
+  async patchBatchJs(patches = [], captureEdits = false) {
     const results = [];
     const seen = new Set();
     const uniquePatches = [];
@@ -408,8 +413,8 @@ class ProjectTools {
           } catch (e) {  }
         }
 
-        const res = await this.patchFileJs(file, p.search, p.replace);
-        results.push({ file, success: res.success, message: res.message || res.error });
+        const res = await this.patchFileJs(file, p.search, p.replace, captureEdits);
+        results.push({ file, success: res.success, message: res.message || res.error, edit: res.edit });
         this.log(res.success ? 'patched ' + file : 'patch failed ' + file + ': ' + (res.message || res.error), res.success ? 'out' : 'err');
 
         if (res.success && (p.replace || '').includes(p.search)) {
@@ -427,13 +432,28 @@ class ProjectTools {
       details: results
     };
   }
-  async createFileJs(filePath, content) {
+  async createFileJs(filePath, content, captureEdits) {
     try {
       const fullPath = path.resolve(this.workspaceDir, filePath);
       await fs.mkdir(path.dirname(fullPath), { recursive: true });
+      let previous;
+      let created = false;
+      if (captureEdits) {
+        try {
+          const stat = await fs.stat(fullPath);
+          if (stat.isFile() && stat.size <= 128 * 1024) {
+            const raw = await fs.readFile(fullPath);
+            const decoded = raw.toString('utf8');
+            if (!decoded.includes('\0') && Buffer.from(decoded).equals(raw)) previous = decoded;
+          }
+        } catch (error) {
+          if (error.code === 'ENOENT') created = true;
+        }
+      }
       await fs.writeFile(fullPath, content, 'utf-8');
       this.log(`+ created ${filePath}`, 'out');
-      return { success: true, message: `Created new file ${filePath}` };
+      return { success: true, message: `Created new file ${filePath}`,
+        edit: created || previous !== undefined ? { search: previous, replace: content } : undefined };
     } catch (err) {
       return { success: false, error: err.message };
     }
@@ -466,11 +486,12 @@ class ProjectTools {
     }
   }
 
-  async patchBatch(patches = []) {
-    if (this._useJsFallback()) return this.patchBatchJs(patches);
+  async patchBatch(patches = [], { captureEdits = false } = {}) {
+    if (this._useJsFallback()) return this.patchBatchJs(patches, captureEdits);
     try {
       const res = await runRustFs({
         op: 'patch_batch',
+        capture_edits: captureEdits,
         workspace: this.workspaceDir,
         patches: patches.map(p => ({
           file: p.file,
@@ -495,47 +516,72 @@ class ProjectTools {
     }
   }
 
-  async createFile(filePath, content) {
-    if (this._useJsFallback()) return this.createFileJs(filePath, content);
+  async createFile(filePath, content, { captureEdits = false } = {}) {
+    if (this._useJsFallback()) return this.createFileJs(filePath, content, captureEdits);
     try {
       const res = await runRustFs({
         op: 'create_file',
+        capture_edits: captureEdits,
         workspace: this.workspaceDir,
         file: filePath,
         content: content ?? ''
       });
       this._replayLogs(res.logs);
       return res.success
-        ? { success: true, message: res.message }
+        ? { success: true, message: res.message,
+            edit: res.created || res.previous !== undefined ? { search: res.previous, replace: content ?? '' } : undefined }
         : { success: false, error: res.error || res.message };
     } catch (err) {
       return { success: false, error: err.message };
     }
   }
 
-  async executeCommand(command) {
-    return new Promise((resolve) => {
-      exec(command, { cwd: this.workspaceDir, timeout: 300000, maxBuffer: 10 * 1024 * 1024, shell: commandShell }, (error, stdout, stderr) => {
-        let output = stdout || '';
-        if (stderr) output += `\n[STDERR]:\n${stderr}`;
-        if (error) output += `\n[ERROR]:\n${error.message}`;
-
-        if (output.length > 5000) {
-          output = output.slice(0, 5000) + '\n...[Output truncated]';
-        }
-          this.log(`$ ${command}`, 'cmd');
-          if (stdout) this.log(stdout.trim(), 'out');
-          if (stderr) this.log(stderr.trim(), 'err');
-          if (error) this.log(`[exit error] ${error.message}`, 'err');
-          resolve({
-          success: !error,
-          output: output.trim() || 'Command executed with no console output.'
-        });
+  async executeCommand(command, signal, timeoutMs = 300000) {
+    if (signal?.aborted) return { success: false, status: 'cancelled', message: 'Command cancelled', output: 'Command cancelled' };
+    const shell = spawnOwnedShell(command, this.workspaceDir);
+    let error = '';
+    let status;
+    const cancel = (reason, commandStatus) => {
+      if (!error) {
+        error = reason;
+        status = commandStatus;
+      }
+      shell.stop();
+    };
+    const abort = () => cancel('Command cancelled', 'cancelled');
+    signal?.addEventListener('abort', abort, { once: true });
+    const timer = setTimeout(() => cancel('Command timed out', 'timed-out'), timeoutMs);
+    function capture(stream) {
+      const chunks = [];
+      let size = 0;
+      stream.on('data', chunk => {
+        size += chunk.length;
+        if (size <= 10 * 1024 * 1024) chunks.push(chunk);
+        else cancel('Command output limit exceeded', 'failed');
       });
-    });
+      return chunks;
+    }
+    const out = capture(shell.child.stdout);
+    const err = capture(shell.child.stderr);
+    try {
+      const result = await shell.done;
+      if (!error && result.code !== 0) error = result.failure?.message || `Command exited with ${result.signal || result.code}`;
+      const stdout = Buffer.concat(out).toString();
+      const stderr = Buffer.concat(err).toString();
+      this.log(`$ ${command}`, 'cmd');
+      const preview = text => text.length > 5000 ? text.slice(0, 5000) + '\n...[Output truncated]' : text.trim();
+      if (stdout) this.log(preview(stdout), 'out');
+      if (stderr) this.log(preview(stderr), 'err');
+      if (error) this.log(error, 'err');
+      const output = stdout + (stderr ? '\n[STDERR]:\n' + stderr : '') + (error ? '\n[ERROR]:\n' + error : '');
+      return { success: !error, status: status || (error ? 'failed' : 'succeeded'),
+        exitCode: result.code, signal: result.signal, message: error || undefined, output: preview(output) || 'Command executed with no console output.' };
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+    }
   }
 
-  
   async listDirectory(targetPath, depth = 3, maxPerDir = 50) {
     let base;
     const cleanTarget = (targetPath || '').trim();
@@ -550,6 +596,7 @@ class ProjectTools {
       base = path.resolve(this.workspaceDir, cleanTarget);
     }
     const safeDepth = Math.min(Math.max(Number(depth) || 3, 1), 4);
+    let directoryError;
     const build = async (dir, d) => {
       if (d > safeDepth) return '';
       let res = '';
@@ -572,13 +619,14 @@ class ProjectTools {
 `;
         }
       } catch (e) {
+        directoryError ??= { status: d === 0 ? 'failed' : 'partial', error: e.message };
         res += `[ERROR: ${e.message}]
 `;
       }
       return res;
     };
     const tree = await build(base, 0);
-    return { path: base, tree: tree || 'Directory is empty.' };
+    return { path: base, tree: tree || 'Directory is empty.', ...directoryError };
   }
   
   async searchCode(query, maxResults = 25, rootDir = null) {
@@ -592,6 +640,7 @@ class ProjectTools {
     const searchRoot = rootDir 
       ? (path.isAbsolute(rootDir) ? path.resolve(rootDir) : path.resolve(this.workspaceDir, rootDir))
       : this.workspaceDir;
+    let rootError;
     const searchDir = async (dir) => {
       if (matches.length >= maxResults) return;
       try {
@@ -639,7 +688,9 @@ class ProjectTools {
             } catch {}
           }
         }
-      } catch {}
+      } catch (error) {
+        if (dir === searchRoot) rootError = { success: false, error: error.message };
+      }
     };
 
     await searchDir(searchRoot);
@@ -649,7 +700,8 @@ class ProjectTools {
       root: searchRoot,
       totalMatches: matches.length,
       hasMore: matches.length >= maxResults,
-      matches
+      matches,
+      ...rootError
     };
   }
 

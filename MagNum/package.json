@@ -5,14 +5,16 @@
   "type": "module",
   "scripts": {
     "build:fs": "node scripts/build-fs.js",
-    "dev": "npm run build:fs && vite",
-    "build": "npm run build:fs && tsc && vite build",
+    "dev": "npm run build:fs && npm run dev:frontend",
+    "dev:frontend": "vite",
+    "build": "npm run build:fs && npm run build:frontend",
+    "build:frontend": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "android:init": "tauri android init",
-    "android:dev": "npm run build:fs && tauri android dev",
-    "android:build": "npm run build:fs && tauri android build --apk",
-    "android:build:aab": "npm run build:fs && tauri android build --aab",
+    "android:dev": "tauri android dev",
+    "android:build": "tauri android build --apk",
+    "android:build:aab": "tauri android build --aab",
     "desktop:build": "tauri build"
   },
   "dependencies": {

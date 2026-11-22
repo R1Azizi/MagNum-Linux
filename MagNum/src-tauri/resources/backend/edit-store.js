@@ -50,14 +50,18 @@ function ensure() {
       CREATE INDEX IF NOT EXISTS idx_edits_message ON edits(message_id);
       CREATE INDEX IF NOT EXISTS idx_edits_session ON edits(session_id, id);
     `);
+    if (!db.prepare('PRAGMA table_info(edits)').all().some(column => column.name === 'run_id')) {
+      db.exec('ALTER TABLE edits ADD COLUMN run_id TEXT');
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_edits_run ON edits(run_id, id)');
   } else {
     memTable = new Map();
   }
 }
 
 function computeDiff(search, replace) {
-  const a = String(search || '').split('\n');
-  const b = String(replace || '').split('\n');
+  const a = search == null ? [] : String(search).split('\n');
+  const b = replace == null ? [] : String(replace).split('\n');
   const n = a.length, m = b.length;
   let lines;
   if ((n + 1) * (m + 1) > MAX_MATRIX_CELLS) {
@@ -81,13 +85,20 @@ function computeDiff(search, replace) {
   }
   let truncated = 0;
   if (lines.length > MAX_STORED_DIFF_LINES) { lines = lines.slice(0, MAX_STORED_DIFF_LINES); truncated = 1; }
+  let size = 0;
+  lines = lines.filter(line => {
+    size += Buffer.byteLength(JSON.stringify(line)) + 1;
+    if (size <= 128 * 1024) return true;
+    truncated = 1;
+    return false;
+  });
   let added = 0, deleted = 0;
   for (const l of lines) { if (l.type === 'add') added++; else if (l.type === 'del') deleted++; }
   return { lines, added, deleted, truncated };
 }
 
 class EditStore {
-  addEdits(sessionId, messageId, edits, status = 'applied') {
+  addEdits(sessionId, messageId, edits, status = 'applied', runId = null) {
     ensure();
     const summaries = [];
     for (const e of edits || []) {
@@ -96,12 +107,12 @@ class EditStore {
       let id;
       if (db) {
         const info = db.prepare(
-          'INSERT INTO edits (session_id, message_id, file, status, added, deleted, diff, truncated, ts) VALUES (?,?,?,?,?,?,?,?,?)'
-        ).run(sessionId || '', messageId || 0, e.file || '', status, d.added, d.deleted, diffJson, d.truncated, Date.now());
+          'INSERT INTO edits (session_id, message_id, file, status, added, deleted, diff, truncated, ts, run_id) VALUES (?,?,?,?,?,?,?,?,?,?)'
+        ).run(sessionId || '', messageId || 0, e.file || '', status, d.added, d.deleted, diffJson, d.truncated, Date.now(), runId);
         id = Number(info.lastInsertRowid);
       } else {
         id = memSeq++;
-        memTable.set(id, { id, session_id: sessionId || '', message_id: messageId || 0, file: e.file || '', status, added: d.added, deleted: d.deleted, diff: diffJson, truncated: d.truncated, ts: Date.now() });
+        memTable.set(id, { id, session_id: sessionId || '', message_id: messageId || 0, file: e.file || '', status, added: d.added, deleted: d.deleted, diff: diffJson, truncated: d.truncated, ts: Date.now(), run_id: runId });
       }
       summaries.push({ id, file: e.file || '', added: d.added, deleted: d.deleted, status });
     }
@@ -134,6 +145,14 @@ class EditStore {
       for (const id of ids) { const r = memTable.get(Number(id)); if (r) out.push(this._rowToDetail(r)); }
     }
     return out;
+  }
+
+  getRunEdits(runId) {
+    ensure();
+    const rows = db
+      ? db.prepare("SELECT id, file, status, added, deleted FROM edits WHERE run_id = ? AND status != 'pending' AND status != 'rejected' ORDER BY id").all(runId)
+      : Array.from(memTable.values()).filter(row => row.run_id === runId && !['pending', 'rejected'].includes(row.status));
+    return rows.map(({ id, file, status, added, deleted }) => ({ id, file, status, added, deleted }));
   }
 
   getDetailsByMessage(messageId) {

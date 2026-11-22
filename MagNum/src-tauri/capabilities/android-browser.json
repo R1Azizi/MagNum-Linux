@@ -1,0 +1,15 @@
+{
+  "identifier": "android-browser",
+  "description": "Allow the main Android WebView to open HTTP and HTTPS pages in Custom Tabs",
+  "platforms": ["android"],
+  "windows": ["main"],
+  "permissions": [
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "http://*", "app": "inAppBrowser" },
+        { "url": "https://*", "app": "inAppBrowser" }
+      ]
+    }
+  ]
+}

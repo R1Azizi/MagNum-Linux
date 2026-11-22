@@ -208,26 +208,53 @@ function installStealth(config) {
 }
 
 
-function sanitizeRestoredSession(userDataDir) {
+const attachedBrowsers = new WeakMap();
+
+// Chromium writes this endpoint inside the profile when launched with port 0.
+// The browser UUID prevents a recycled port from attaching to another profile.
+async function attachProfile(userDataDir) {
   try {
-    const defDir = path.join(userDataDir, 'Default');
-    
-    fs.rmSync(path.join(defDir, 'Sessions'), { recursive: true, force: true });
-    
-    const prefPath = path.join(defDir, 'Preferences');
-    if (fs.existsSync(prefPath)) {
-      const prefs = JSON.parse(fs.readFileSync(prefPath, 'utf8'));
-      prefs.profile = prefs.profile || {};
-      prefs.profile.exit_type = 'Normal';
-      prefs.session = prefs.session || {};
-      prefs.session.restore_on_startup = 5; 
-      fs.writeFileSync(prefPath, JSON.stringify(prefs));
-    }
-  } catch (e) {  }
+    const file = await fs.promises.readFile(path.join(userDataDir, 'DevToolsActivePort'), 'utf8');
+    const [port, endpoint] = file.trim().split(/\r?\n/);
+    if (!/^\d+$/.test(port) || !/^\/devtools\/browser\/[a-f0-9-]+$/i.test(endpoint)) return null;
+    const browser = await chromium.connectOverCDP('ws://127.0.0.1:' + port + endpoint, { timeout: 2000 });
+    const [context] = browser.contexts();
+    if (!context) { await browser.close(); return null; }
+    attachedBrowsers.set(context, browser);
+    return context;
+  } catch { return null; }
+}
+
+function tabHost(page) {
+  try { return new URL(page.url()).hostname; } catch { return ''; }
+}
+
+function providerSignInTab(page, hostname) {
+  const host = tabHost(page);
+  return (hostname === 'aistudio.google.com' && host === 'accounts.google.com')
+    || (hostname === 'chatgpt.com' && ['auth.openai.com', 'accounts.google.com', 'appleid.apple.com'].includes(host));
+}
+
+async function selectProviderTab(context, hostname, target, current) {
+  const pages = context.pages().filter(page => !page.isClosed());
+  const matching = pages.filter(page => tabHost(page) === hostname);
+  return matching.find(page => target && page.url() === target)
+    || (matching.includes(current) && current)
+    || matching[0]
+    || pages.find(page => providerSignInTab(page, hostname))
+    || pages.find(page => page.url() === 'about:blank')
+    || context.newPage();
+}
+
+async function releaseProviderContext(context) {
+  const attached = attachedBrowsers.get(context);
+  if (attached) await attached.close(); // Disconnect this CDP client.
+  else await context.close();
 }
 
 async function launchStealthContext(userDataDir, options = {}) {
-  sanitizeRestoredSession(userDataDir);
+  const attached = await attachProfile(userDataDir);
+  if (attached) return attached;
   const resolved = resolveBrowser();
   const channel = options.channel !== undefined ? options.channel : resolved.channel;
   const executablePath = options.channel !== undefined ? null : resolved.executablePath;
@@ -245,7 +272,7 @@ async function launchStealthContext(userDataDir, options = {}) {
       acceptDownloads: true,
       // Opt-in only (e.g. containers / restricted user namespaces on Linux).
       chromiumSandbox: process.env.MAGNUM_NO_SANDBOX !== '1',
-      args: STEALTH_ARGS,
+      args: [...STEALTH_ARGS, '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0'],
       ignoreDefaultArgs: IGNORED_DEFAULT_ARGS,
     });
   } catch (err) {
@@ -253,6 +280,9 @@ async function launchStealthContext(userDataDir, options = {}) {
       throw new Error(
         'No Chrome, Edge or Chromium found. Install one, or run: npx playwright install chromium\n' + err.message
       );
+    }
+    if (/SingletonLock|ProcessSingleton|profile.*in use|user data directory is already in use/i.test(err.message)) {
+      throw new Error('The MagNum provider profile is in use. Close the window using ' + userDataDir + ' and choose Reconnect.');
     }
     throw err;
   }
@@ -266,4 +296,4 @@ async function launchStealthContext(userDataDir, options = {}) {
   return context;
 }
 
-module.exports = { launchStealthContext, installStealth, resolveChannel, resolveBrowser };
+module.exports = { providerSignInTab, selectProviderTab, releaseProviderContext, launchStealthContext, installStealth, resolveChannel, resolveBrowser };

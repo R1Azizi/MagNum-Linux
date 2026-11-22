@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +7,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, '..');                       // MagNum/
 const crateDir = path.join(root, 'src-tauri', 'magnum-fs');
 const manifest = path.join(crateDir, 'Cargo.toml');
+
+// The Linux process supervisor uses only the Rust standard library.
+if (process.platform === 'linux' && !process.env.TAURI_ENV_PLATFORM?.includes('android')) {
+  const source = path.join(root, 'src-tauri', 'owned-shell.rs');
+  const target = path.join(root, 'src-tauri', 'resources', 'backend', 'owned-shell');
+  if (!fs.existsSync(target) || fs.statSync(target).mtimeMs < fs.statSync(source).mtimeMs) {
+    execFileSync('rustc', ['--edition=2021', '-O', '-C', 'strip=symbols', source, '-o', target], { stdio: 'inherit' });
+  }
+}
 
 const bin = process.platform === 'win32' ? 'magnum-fs.exe' : 'magnum-fs';
 const src = path.join(crateDir, 'target', 'release', bin);
@@ -18,7 +27,8 @@ if (!fs.existsSync(manifest)) {
 }
 
 // اگر باینری از سورس تازه‌تر است، دوباره cargo اجرا نکن (dev سریع بماند)
-const sources = [manifest, path.join(crateDir, 'src', 'main.rs')];
+const sourceDir = path.join(crateDir, 'src');
+const sources = [manifest, ...fs.readdirSync(sourceDir).filter(name => name.endsWith('.rs')).map(name => path.join(sourceDir, name))];
 const newestSrc = Math.max(...sources.map(f => fs.statSync(f).mtimeMs));
 const upToDate = fs.existsSync(dst) && fs.statSync(dst).mtimeMs > newestSrc;
 

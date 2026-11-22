@@ -1,0 +1,91 @@
+.inspection-panel {
+  overflow: auto;
+  padding: 12px;
+  color: var(--text-main);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.inspection-panel p {
+  margin: 3px 0;
+  color: var(--text-muted);
+}
+
+.inspection-row,
+.inspection-run-picker,
+.inspection-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inspection-row { justify-content: space-between; }
+.inspection-actions { flex-wrap: wrap; }
+
+.inspection-button,
+.inspection-run-picker select {
+  padding: 5px 8px;
+  background: var(--bg-surface);
+  color: var(--text-main);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.inspection-button { align-self: flex-start; cursor: pointer; flex-shrink: 0; }
+.inspection-button:disabled { opacity: .55; cursor: default; }
+.inspection-button[aria-pressed="true"] { border-color: var(--accent-green); }
+.inspection-run-picker select { flex: 1; min-width: 0; }
+.inspection-target { overflow-wrap: anywhere; }
+
+.inspection-status,
+.inspection-git-file {
+  padding: 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: var(--bg-card);
+  display: grid;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+
+.inspection-timeline { list-style: none; padding: 0; margin: 0; }
+.inspection-entry { padding: 8px 0; border-bottom: 1px solid var(--border-subtle); overflow-wrap: anywhere; }
+.inspection-entry > div + div { margin-top: 4px; }
+.inspection-entry time { color: var(--text-muted); white-space: nowrap; }
+.inspection-entry summary { cursor: pointer; margin-top: 4px; color: var(--text-muted); }
+.inspection-entry pre {
+  white-space: pre-wrap;
+  max-height: 14rem;
+  overflow: auto;
+  padding: 8px;
+  margin: 4px 0 0;
+  background: var(--bg-code);
+}
+
+@media (max-width: 680px) {
+  .inspector-drawer {
+    position: absolute !important;
+    inset: 0 0 0 auto;
+    max-width: 100%;
+    z-index: 20;
+  }
+}
+
+.inspection-times {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 14px;
+  row-gap: 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.inspection-step { white-space: pre-wrap; }
+
+.inspection-entry[data-status="failed"] strong,
+.inspection-entry[data-status="timed-out"] strong {
+  color: var(--diff-del-text);
+}
